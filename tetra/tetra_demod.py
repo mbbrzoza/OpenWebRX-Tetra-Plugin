@@ -6,7 +6,8 @@ Outputs demodulated bits to stdout.
 Outputs AFC (frequency offset) info to stderr as JSON lines.
 
 Based on simdemod3_telive.py by Jacek Lipkowski SQ5BPF,
-adapted for OpenWebRX+ integration by SP8MB.
+adapted for OpenWebRX+ integration.
+Author: SP8MB
 
 Requires: gnuradio 3.10+
 """

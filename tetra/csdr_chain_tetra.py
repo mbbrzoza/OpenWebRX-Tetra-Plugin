@@ -1,4 +1,5 @@
 """OpenWebRX+ TETRA demodulator chain.
+Author: SP8MB
 
 Provides TETRA voice decoding as a primary demodulator chain,
 following the same pattern as DMR/D-Star/YSF/NXDN in digiham.py.

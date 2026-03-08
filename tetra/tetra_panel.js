@@ -1,3 +1,6 @@
+// TETRA meta panel for OpenWebRX+
+// Author: SP8MB
+
 function TetraMetaPanel(el) {
     MetaPanel.call(this, el);
     this.modes = ['TETRA'];

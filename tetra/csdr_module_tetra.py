@@ -1,4 +1,5 @@
 """OpenWebRX+ TETRA decoder module.
+Author: SP8MB
 
 This module wraps the TETRA decoder pipeline as a PopenModule for
 integration into the OpenWebRX+ signal processing chain.

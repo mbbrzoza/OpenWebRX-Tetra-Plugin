@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """TETRA decoder wrapper for OpenWebRX+.
+Author: SP8MB
 
 Reads complex float IQ from stdin (36 kS/s, centered on TETRA carrier).
 Writes PCM audio to stdout (8 kHz, 16-bit signed LE, mono).

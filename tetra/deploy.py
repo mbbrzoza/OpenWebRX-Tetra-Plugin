@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Deploy TETRA files on RPi."""
+"""Deploy TETRA files on RPi.
+Author: SP8MB
+"""
 import shutil
 import os
 import subprocess

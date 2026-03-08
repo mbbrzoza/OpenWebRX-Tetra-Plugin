@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Update index.html and CSS for TETRA panel."""
+"""Update index.html and CSS for TETRA panel.
+Author: SP8MB
+"""
 
 # Replace TETRA panel in index.html
 html_file = "/usr/lib/python3/dist-packages/htdocs/index.html"
