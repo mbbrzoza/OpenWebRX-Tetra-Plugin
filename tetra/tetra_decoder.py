@@ -653,6 +653,8 @@ def main():
 
     # Current LA (string) — tracked from netinfo emits, attached to ms_register events
     current_la = [None]
+    # Track last network (MCC, MNC) — reset session state on change (user retuned to different cell)
+    current_network = [None]  # tuple (mcc, mnc) or None
 
     # Active ISSIs seen in RESOURCE stdout lines (any radio communicating on cell)
     # ssi -> {"last_seen": mono, "encr": int}
@@ -811,21 +813,29 @@ def main():
                                 call_extras["calling_ssi"] = int(cm.group(4))
                                 call_extras["calling_ext"] = int(cm.group(5))
 
-                    # RESOURCE ... Addr=SSI(N) — active radio in cell
+                    # RESOURCE ... Addr=SSI(N) — destination address (MAY be GSSI/USSI not ISSI)
                     if 'RESOURCE' in line and 'Addr=SSI' in line:
                         rm = RESOURCE_SSI_PATTERN.search(line)
                         if rm:
                             ssi = int(rm.group(2))
-                            # Filter out 0xFFFFFF (broadcast/wildcard) and 0
-                            if ssi == 0 or ssi == 0xFFFFFF:
-                                pass
-                            else:
+                            if ssi != 0 and ssi != 0xFFFFFF:
                                 encr = int(rm.group(1))
                                 with state_lock:
-                                    active_ssi[ssi] = {
-                                        "last_seen": time.monotonic(),
-                                        "encr": encr,
-                                    }
+                                    entry = active_ssi.setdefault(ssi, {"encr": encr, "sources": set()})
+                                    entry["last_seen"] = time.monotonic()
+                                    entry["encr"] = encr
+                                    entry["sources"].add("resource_addr")
+
+                    # NotificationID — calling_ssi is confirmed ISSI (individual radio TX'ing)
+                    if 'NotificationID:' in line:
+                        nm = CALLER_PATTERN.search(line)
+                        if nm:
+                            issi = int(nm.group(4))
+                            if issi != 0:
+                                with state_lock:
+                                    entry = active_ssi.setdefault(issi, {"encr": 0, "sources": set()})
+                                    entry["last_seen"] = time.monotonic()
+                                    entry["sources"].add("calling_ssi")
 
                     def _emit_ms(evt):
                         if current_la[0]:
@@ -1140,7 +1150,14 @@ def main():
         if now_mono - last_active_ssi_emit[0] >= ACTIVE_SSI_EMIT:
             with state_lock:
                 live = [
-                    {"ssi": s, "encr": v["encr"], "age": round(now_mono - v["last_seen"], 1)}
+                    {
+                        "ssi": s,
+                        "encr": v["encr"],
+                        "age": round(now_mono - v["last_seen"], 1),
+                        "sources": sorted(v.get("sources", [])),
+                        # confirmed = seen as calling_ssi (real ISSI), else may be GSSI/addr
+                        "confirmed": "calling_ssi" in v.get("sources", []),
+                    }
                     for s, v in active_ssi.items()
                     if now_mono - v["last_seen"] < ACTIVE_SSI_TTL
                 ]
@@ -1225,6 +1242,22 @@ def main():
                     la_val = meta.get("la")
                     if la_val:
                         current_la[0] = str(la_val)
+                    # Detect MCC/MNC change → reset session state (active_ssi, neighbours, etc.)
+                    mcc_v = meta.get("mcc")
+                    mnc_v = meta.get("mnc")
+                    if mcc_v and mnc_v and meta.get("dl_freq"):
+                        net_key = (mcc_v, mnc_v)
+                        if current_network[0] is not None and current_network[0] != net_key:
+                            with state_lock:
+                                active_ssi.clear()
+                                neighbour_cells.clear()
+                                call_extras.clear()
+                            emit_meta({
+                                "protocol": "TETRA", "type": "session_reset",
+                                "old_network": "%d-%d" % current_network[0],
+                                "new_network": "%d-%d" % net_key,
+                            })
+                        current_network[0] = net_key
 
                 # Add call_type to call_setup messages
                 if msg_type == "call_setup":
