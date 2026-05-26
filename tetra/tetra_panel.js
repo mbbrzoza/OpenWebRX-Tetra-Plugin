@@ -42,12 +42,6 @@ function TetraMetaPanel(el) {
     this._loadLabels();
     this._loadPrefs();
     var self = this;
-    $(el).on('click', '.tetra-active-ssi-toggle', function(){
-        var listEl = $(el).find('.tetra-active-ssi-list');
-        var open = listEl.is(':visible');
-        listEl.toggle(!open);
-        $(el).find('.tetra-active-ssi-arrow').text(open ? '▸' : '▾');
-    });
     $(el).on('click', '.tetra-activity-toggle', function(){
         var listEl = $(el).find('.tetra-activity-list');
         var open = listEl.is(':visible');
@@ -1027,8 +1021,6 @@ TetraMetaPanel.prototype.update = function(data) {
         this._currentCall = null;
         this._stopDurationTimer();
         var $el = $(this.el);
-        $el.find('.tetra-active-ssi-list').html('');
-        $el.find('.tetra-active-ssi-count').text('0');
         this._logActivity('<i>--- session reset (' + (data.old_network||'?') + ' → ' + (data.new_network||'?') + ') ---</i>', '#9ab');
         return;
     }
@@ -1257,51 +1249,27 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'active_ssi') {
         var ssis = data.ssis || [];
-        // Classification:
-        //   real    = encr=0 (clear) — actual ISSI of radio (no ESI used)
-        //   esi     = encr=2 (encrypted) — ESI alias, pseudo-random, rotates per session
-        //   other   = !confirmed — destination MAC address (GSSI/USSI/etc.)
-        var real = ssis.filter(function(r){ return r.confirmed && r.encr !== 2; });
-        var esi  = ssis.filter(function(r){ return r.confirmed && r.encr === 2; });
-        var addrs = ssis.filter(function(r){ return !r.confirmed; });
-        var self = this;
-        el.find('.tetra-active-ssi-count').text(real.length);
-        var rowFor = function(r, opts){
-            opts = opts || {};
-            var lbl = self._labelFor('issi', r.ssi);
-            var note = opts.note ? ' <span style="color:#fc9">'+opts.note+'</span>' : '';
-            var style = opts.dim ? ' style="color:#789"' : '';
-            return '<div'+style+'>' + r.ssi + (lbl ? ' <span style="color:#9cf">['+lbl+']</span>' : '') + note +
-                   ' <span style="color:#678">(' + r.age.toFixed(0) + 's)</span></div>';
-        };
-        var html = '';
-        html += '<div style="color:#51cf66;font-size:0.85em;margin:2px 0">Real ISSI [encr=0] (' + real.length + ')</div>';
-        html += (real.map(function(r){ return rowFor(r); }).join('')) || '<div style="color:#678">brak</div>';
-        if (esi.length) {
-            html += '<div style="color:#ffd43b;font-size:0.85em;margin:6px 0 2px;border-top:1px dashed #345;padding-top:3px">ESI aliases [encr=2, rotują] (' + esi.length + ')</div>';
-            html += esi.map(function(r){ return rowFor(r, { dim: true, note: 'alias' }); }).join('');
-        }
-        if (addrs.length) {
-            html += '<div style="color:#9ab;font-size:0.85em;margin:6px 0 2px;border-top:1px dashed #345;padding-top:3px">Inne adresy (GSSI/USSI/addr, ' + addrs.length + ')</div>';
-            html += addrs.map(function(r){ return rowFor(r, { dim: true }); }).join('');
-        }
-        el.find('.tetra-active-ssi-list').html(html);
-        // Detect new ISSIs (first appearance in this session) → log entry
-        // Only consider confirmed ISSIs (avoid GSSI/USSI noise in activity)
+        // Log every NEW SSI seen in this session to Activity feed (with classification)
         var currentSet = {};
         for (var i = 0; i < ssis.length; i++) {
             var r = ssis[i];
-            // Only track REAL ISSIs (confirmed + clear) — ESI aliases rotate and confuse
-            if (!r.confirmed || r.encr === 2) continue;
             currentSet[r.ssi] = true;
             this._touchTerminal(r.ssi, 'active_ssi', { encr: r.encr });
             if (!this._seenSsis[r.ssi]) {
                 this._seenSsis[r.ssi] = true;
                 this._ssiSeenAt[r.ssi] = Date.now();
-                if (this._filterAllows('ssi_appeared')) {
-                    var lblNew = this._labelFor('issi', r.ssi);
-                    this._logActivity('SSI ' + r.ssi + (lblNew ? ' [' + lblNew + ']' : '') + ' — pojawił się w komórce', '#9af');
+                if (!this._filterAllows('ssi_appeared')) continue;
+                var lblNew = this._labelFor('issi', r.ssi);
+                var lblTag = lblNew ? ' [' + lblNew + ']' : '';
+                var kind, color;
+                if (r.encr === 2) {
+                    kind = 'ESI alias 🔒'; color = '#ffd43b';
+                } else if (r.confirmed) {
+                    kind = 'Real ISSI'; color = '#51cf66';
+                } else {
+                    kind = 'Adres SSI (GSSI/USSI)'; color = '#9af';
                 }
+                this._logActivity(kind + ' ' + r.ssi + lblTag + ' — pojawił się w komórce', color);
             }
         }
         if (this._filterAllows('ssi_disappeared')) {
@@ -1368,10 +1336,8 @@ TetraMetaPanel.prototype.clear = function() {
     el.find('.tetra-encrypted').text('---').css('color', '');
     el.find('.tetra-afc, .tetra-burst-rate').text('---').css('color', '');
     el.find('.tetra-ts').removeClass('busy idle');
-    el.find('.tetra-neighbour-count, .tetra-active-ssi-count').text('0');
+    el.find('.tetra-neighbour-count').text('0');
     el.find('.tetra-neighbour-list').text('');
-    el.find('.tetra-active-ssi-list').html('').hide();
-    el.find('.tetra-active-ssi-arrow').text('▸');
     this._activityLog = [];
     this._msRegLog = [];
     this._sdsLog = [];

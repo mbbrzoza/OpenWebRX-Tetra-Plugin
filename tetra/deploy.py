@@ -58,3 +58,19 @@ import glob
 for d in glob.glob("/usr/lib/python3/dist-packages/**/__pycache__", recursive=True):
     shutil.rmtree(d, ignore_errors=True)
 print("Cache cleared")
+
+# 5. Cache-bust receiver.js in index.html so browser refetches new code
+import re as _re, time as _time
+ts = str(int(_time.time()))
+with open(html_file, "r") as f:
+    html_now = f.read()
+# Replace any prior /compiled/receiver.js[?v=...] with fresh ?v=<ts>
+new_html = _re.sub(
+    r'(compiled/receiver\.js)(\?v=\d+)?',
+    r'\1?v=' + ts,
+    html_now
+)
+if new_html != html_now:
+    with open(html_file, "w") as f:
+        f.write(new_html)
+    print(f"receiver.js cache-bust: ?v={ts}")
