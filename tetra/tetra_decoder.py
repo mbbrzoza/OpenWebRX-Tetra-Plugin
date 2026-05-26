@@ -27,11 +27,11 @@ TETRA_DIR = os.path.dirname(os.path.abspath(__file__))
 # Audio constants (from TETRA ACELP codec)
 ACELP_FRAME_SIZE = 1380   # 2 speech frames, 690 int16 values
 PCM_OUTPUT_BYTES = 960     # 480 samples x 2 bytes (2 frames x 240 samples)
-AUDIO_HEADER_SIZE = 20     # "TRA:XX RX:XX DECR:XX" header
 
-# Regex for audio message header
+# osmo-tetra-sq5bpf writes header "TRA:XX RX:XX\0" (13 bytes) followed by 1380 bytes ACELP.
+# Some older forks emit "TRA:XX RX:XX DECR:X\0" (20 bytes). Match both; locate body via NUL.
 AUDIO_PATTERN = re.compile(
-    rb"TRA:([0-9a-fA-F]+)\s+RX:([0-9a-fA-F]+)\s+DECR:([0-9a-fA-F]+)"
+    rb"TRA:([0-9a-fA-F]+)\s+RX:([0-9a-fA-F]+)(?:\s+DECR:([0-9a-fA-F]+))?\x00"
 )
 
 # DRELEASEDEC payload contains optional "[reason text]" between NID and RX
@@ -132,20 +132,24 @@ def parse_audio_from_udp(data):
     """Extract ACELP audio data from a TETMON UDP packet.
 
     Returns ACELP bytes (1380) or None.
+
+    osmo-tetra packs the packet as: sprintf(tmp,"TRA:XX RX:XX\\0"); memcpy(tmp+13, acelp, 1380).
+    Header is the matched part including the NUL terminator; ACELP body starts at match.end().
     """
     tra_pos = data.find(b'TRA:')
     if tra_pos < 0:
         return None
 
     payload = data[tra_pos:]
-    if len(payload) < AUDIO_HEADER_SIZE + ACELP_FRAME_SIZE:
-        return None
-
     match = AUDIO_PATTERN.match(payload)
     if not match:
         return None
 
-    return payload[AUDIO_HEADER_SIZE:AUDIO_HEADER_SIZE + ACELP_FRAME_SIZE]
+    body_start = match.end()
+    if len(payload) < body_start + ACELP_FRAME_SIZE:
+        return None
+
+    return payload[body_start:body_start + ACELP_FRAME_SIZE]
 
 
 def parse_metadata_from_udp(data):
@@ -623,8 +627,11 @@ def main():
 
     # Shared state protected by lock
     state_lock = threading.Lock()
-    # Timeslot usage: {tn: "assigned"/"unallocated"/"unknown"}
+    # Timeslot usage: {tn: "unallocated"/"control"/"common_control"/"reserved"/"traffic"/"stale"/"unknown"}
     ts_usage = {1: "unknown", 2: "unknown", 3: "unknown", 4: "unknown"}
+    # Per-slot last ACCESS-ASSIGN timestamp (monotonic) for TTL-based aging
+    ts_seen = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    TS_TTL_SEC = 2.0
     current_tn = [0]
     # AFC value from demodulator (Hz offset)
     afc_value = [0.0]
@@ -665,7 +672,7 @@ def main():
 
     # Compiled regex for stdout parsing
     re_sync = re.compile(r'TN \d+\((\d+)\)')
-    re_access_dl = re.compile(r'DL_USAGE:\s*(\S+)')
+    re_access_dl = re.compile(r'DL_USAGE:\s*(Unallocated|Assigned control|Common control|Reserved|Traffic|\S+)')
     re_access_a1 = re.compile(r'ACCESS1:\s*A/(\d+)')
     re_basicinfo = re.compile(r'Basicinfo:0x([0-9A-Fa-f]{2})')
     re_duplex = re.compile(r'Duplex:(\d+)')
@@ -719,7 +726,7 @@ def main():
 
                 for line in text.split('\n'):
                     _diag_stdout_count(line)
-                    # ACCESS-ASSIGN → timeslot usage
+                    # ACCESS-ASSIGN → timeslot usage (full DL_USAGE categories)
                     if 'ACCESS-ASSIGN' in line:
                         tn = current_tn[0]
                         if not (1 <= tn <= 4):
@@ -728,12 +735,34 @@ def main():
                             m = re_access_dl.search(line)
                             if m:
                                 usage = m.group(1)
-                                ts_usage[tn] = "unallocated" if usage.startswith('U') else "assigned"
+                                if usage == 'Unallocated':
+                                    cat = 'unallocated'
+                                elif usage == 'Assigned control':
+                                    cat = 'control'
+                                elif usage == 'Common control':
+                                    cat = 'common_control'
+                                elif usage == 'Reserved':
+                                    cat = 'reserved'
+                                else:
+                                    cat = 'traffic'
+                                ts_usage[tn] = cat
+                                ts_seen[tn] = time.monotonic()
                                 continue
                             m = re_access_a1.search(line)
                             if m:
                                 val = int(m.group(1))
-                                ts_usage[tn] = "assigned" if 1 <= val <= 3 else "unallocated"
+                                if val == 0:
+                                    cat = 'unallocated'
+                                elif val == 1:
+                                    cat = 'control'
+                                elif val == 2:
+                                    cat = 'common_control'
+                                elif val == 3:
+                                    cat = 'reserved'
+                                else:
+                                    cat = 'traffic'
+                                ts_usage[tn] = cat
+                                ts_seen[tn] = time.monotonic()
 
                     # Basicinfo → call type (group/individual/etc.)
                     if 'Basicinfo' in line:
@@ -1223,7 +1252,16 @@ def main():
                 if msg_type == "burst":
 
                     with state_lock:
-                        meta["timeslots"] = {str(k): v for k, v in ts_usage.items()}
+                        now_m = time.monotonic()
+                        ts_payload = {}
+                        for k, v in ts_usage.items():
+                            age = now_m - ts_seen[k] if ts_seen[k] > 0 else None
+                            usage_eff = v if (age is not None and age <= TS_TTL_SEC) else ('stale' if ts_seen[k] > 0 else 'unknown')
+                            ts_payload[str(k)] = {
+                                "usage": usage_eff,
+                                "age": round(age, 2) if age is not None else None,
+                            }
+                        meta["timeslots"] = ts_payload
                         meta["afc"] = afc_value[0]
                         meta["burst_rate"] = round(burst_rate[0], 1)
                         if call_type_info[0]:
@@ -1238,6 +1276,8 @@ def main():
                             meta["service_details"] = network_state["service_details"]
                         if network_state["hyperframe"] is not None:
                             meta["hyperframe"] = network_state["hyperframe"]
+                        if network_state.get("tetra_time"):
+                            meta["tetra_time"] = network_state["tetra_time"]
                     # Track current LA for ms_register events
                     la_val = meta.get("la")
                     if la_val:

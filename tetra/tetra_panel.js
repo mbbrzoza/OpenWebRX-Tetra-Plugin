@@ -73,6 +73,19 @@ TetraMetaPanel.prototype._timestamp = function() {
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 };
 
+TetraMetaPanel.prototype._formatTetraTime = function(tt) {
+    if (!tt) return '---';
+    var secs = tt.secs || 0;
+    var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+    var hh = Math.floor((secs % 86400) / 3600);
+    var mm = Math.floor((secs % 3600) / 60);
+    var ss = secs % 60;
+    var day = Math.floor(secs / 86400);
+    var off = tt.offset_min || 0;
+    var offStr = 'UTC' + (off >= 0 ? '+' : '') + (off / 60).toFixed(off % 60 ? 2 : 0);
+    return pad(hh) + ':' + pad(mm) + ':' + pad(ss) + ' (d' + day + ', ' + offStr + ', rok ' + (tt.year || '?') + ')';
+};
+
 TetraMetaPanel.prototype._logActivity = function(html, color) {
     var ts = this._timestamp();
     var row = '<div style="color:' + (color || '#bcd') + '">' +
@@ -1057,6 +1070,9 @@ TetraMetaPanel.prototype.update = function(data) {
         this._renderTttWindow();
         el.find('.tetra-encrypted').text(data.encrypted ? 'TAK' : 'NIE')
             .css('color', data.encrypted ? '#ff6b6b' : '#51cf66');
+        if (data.tetra_time) {
+            el.find('.tetra-tetra-time').text(this._formatTetraTime(data.tetra_time));
+        }
     }
     else if (type === 'encinfo') {
         el.find('.tetra-encrypted').text(data.encrypted ? 'TAK (' + data.enc_mode + ')' : 'NIE')
@@ -1246,6 +1262,9 @@ TetraMetaPanel.prototype.update = function(data) {
             var extra = cells.length > max ? ' +' + (cells.length - max) : '';
             el.find('.tetra-neighbour-list').text('[' + parts.join(', ') + extra + ']');
         }
+        if (data.tetra_time) {
+            el.find('.tetra-tetra-time').text(this._formatTetraTime(data.tetra_time));
+        }
     }
     else if (type === 'active_ssi') {
         var ssis = data.ssis || [];
@@ -1295,19 +1314,41 @@ TetraMetaPanel.prototype.update = function(data) {
             var brColor = br > 40 ? '#51cf66' : (br > 20 ? '#ffd43b' : '#ff6b6b');
             el.find('.tetra-burst-rate').text(br.toFixed(0) + '/s').css('color', brColor);
         }
-        // Timeslots
+        // Timeslots — fine-grained DL_USAGE with TTL-based aging
         if (data.timeslots) {
-            el.find('.tetra-ts').removeClass('busy idle');
+            var TS_STYLE = {
+                traffic:        { bg: '#e67700', fg: '#fff', letter: 'T',  label: 'Traffic (aktywna rozmowa)' },
+                control:        { bg: '#1971c2', fg: '#fff', letter: 'C',  label: 'Assigned control (MCCH — sygnalizacja)' },
+                common_control: { bg: '#0c8599', fg: '#fff', letter: 'Cc', label: 'Common control (SCCH)' },
+                reserved:       { bg: '#7048e8', fg: '#fff', letter: 'R',  label: 'Reserved' },
+                unallocated:    { bg: '#2b8a3e', fg: '#fff', letter: '·',  label: 'Unallocated (slot wolny)' },
+                stale:          { bg: '#343a40', fg: '#888', letter: '⌛', label: 'Stale (brak ACCESS-ASSIGN >2 s)' },
+                unknown:        { bg: '#212529', fg: '#666', letter: '?',  label: 'Brak danych' },
+                assigned:       { bg: '#e67700', fg: '#fff', letter: 'T',  label: 'Assigned (legacy)' }
+            };
             var assignedTs = null;
             for (var tn in data.timeslots) {
-                var usage = data.timeslots[tn];
+                var entry = data.timeslots[tn];
+                var usage, age = null;
+                if (typeof entry === 'string') { usage = entry; }
+                else { usage = entry.usage; age = entry.age; }
+                var style = TS_STYLE[usage] || TS_STYLE.unknown;
                 var tsEl = el.find('.tetra-ts-' + tn);
-                if (usage === 'assigned') {
-                    tsEl.addClass('busy');
-                    if (assignedTs == null) assignedTs = tn;
-                } else if (usage === 'unallocated') {
-                    tsEl.addClass('idle');
-                }
+                tsEl.removeClass('busy idle');
+                tsEl.css({
+                    background: style.bg,
+                    color: style.fg,
+                    'min-width': '22px',
+                    'text-align': 'center',
+                    'border-radius': '3px',
+                    'padding': '1px 4px',
+                    'margin-right': '3px',
+                    'font-family': 'monospace'
+                });
+                tsEl.html(tn + '<sub style="font-size:0.75em;opacity:0.85;margin-left:2px">' + style.letter + '</sub>');
+                var ageStr = (age != null) ? (' · ' + age.toFixed(1) + 's temu') : '';
+                tsEl.attr('title', 'TS' + tn + ': ' + style.label + ageStr);
+                if (usage === 'traffic' && assignedTs == null) assignedTs = tn;
             }
             if (assignedTs != null) {
                 this._currentTimeslot = assignedTs;
@@ -1335,7 +1376,12 @@ TetraMetaPanel.prototype.clear = function() {
     el.find('.tetra-color-code, .tetra-la').text('---');
     el.find('.tetra-encrypted').text('---').css('color', '');
     el.find('.tetra-afc, .tetra-burst-rate').text('---').css('color', '');
-    el.find('.tetra-ts').removeClass('busy idle');
+    el.find('.tetra-ts').removeClass('busy idle').each(function(i){
+        var n = i + 1;
+        $(this).html(n + '<sub style="font-size:0.75em;opacity:0.85;margin-left:2px">?</sub>')
+               .css({ background: '#212529', color: '#666' })
+               .attr('title', 'TS' + n + ': brak danych');
+    });
     el.find('.tetra-neighbour-count').text('0');
     el.find('.tetra-neighbour-list').text('');
     this._activityLog = [];
