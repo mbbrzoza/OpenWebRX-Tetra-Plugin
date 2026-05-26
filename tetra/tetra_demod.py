@@ -16,10 +16,26 @@ from gnuradio import analog, blocks, digital, gr
 from gnuradio.filter import firdes
 import cmath
 import json
+import math
 import numpy as np
+import os
 import signal
 import sys
 import time
+
+# Channel offset in Hz — frequency shift applied BEFORE FLL.
+# TETRA networks may use ±6.25 kHz or ±12.5 kHz channel offset.
+# Can be set via env var TETRA_OFFSET_HZ or via /opt/openwebrx-tetra/offset.txt.
+def _read_offset():
+    env = os.environ.get('TETRA_OFFSET_HZ', '').strip()
+    if env:
+        try: return float(env)
+        except ValueError: pass
+    try:
+        with open('/opt/openwebrx-tetra/offset.txt') as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return 0.0
 
 
 class AFCProbe(gr.sync_block):
@@ -64,6 +80,17 @@ class TetraDemod(gr.top_block):
         # Source: complex float IQ from stdin
         self.source = blocks.file_descriptor_source(gr.sizeof_gr_complex, 0, False)
 
+        # Channel-offset compensation (rotator) — shifts signal by -offset_hz
+        # so that the actual carrier appears at baseband zero before FLL.
+        self.offset_hz = _read_offset()
+        if abs(self.offset_hz) > 0.5:
+            phase_inc = -2.0 * math.pi * self.offset_hz / 36000.0
+            self.offset_rot = blocks.rotator_cc(phase_inc)
+            sys.stderr.write(json.dumps({"info": "offset_applied", "hz": self.offset_hz}) + "\n")
+            sys.stderr.flush()
+        else:
+            self.offset_rot = None
+
         # AGC
         self.agc = analog.feedforward_agc_cc(8, 1)
 
@@ -94,9 +121,14 @@ class TetraDemod(gr.top_block):
         self.afc_probe = AFCProbe(interval=2.0)
 
         # Connections
-        self.connect(self.source, self.agc, self.fll, self.clock_sync,
-                     self.equalizer, self.diff_phasor, self.decoder,
-                     self.mapper, self.unpack, self.stdout_sink)
+        if self.offset_rot is not None:
+            self.connect(self.source, self.offset_rot, self.agc, self.fll, self.clock_sync,
+                         self.equalizer, self.diff_phasor, self.decoder,
+                         self.mapper, self.unpack, self.stdout_sink)
+        else:
+            self.connect(self.source, self.agc, self.fll, self.clock_sync,
+                         self.equalizer, self.diff_phasor, self.decoder,
+                         self.mapper, self.unpack, self.stdout_sink)
 
         # FLL: port1=phase, port2=frequency, port3=error
         self.connect((self.fll, 1), (self.null_sink, 0))

@@ -310,6 +310,25 @@ def parse_metadata_from_udp(data):
             sm = re.search(r'STATUS:0x([0-9a-fA-F]+)', descr)
             if sm:
                 result["status_code"] = int(sm.group(1), 16)
+            # Protocol identifier (SDS PDU)
+            pm = re.search(r'(?:PROT|PI|ProtocolIdent)[:\s=]+(\d+)', descr, re.I)
+            if pm:
+                result["protocol_ident"] = int(pm.group(1))
+            # Delivery status (SDS-REPORT)
+            dm = re.search(r'(?:DELIVERY[_ ]?STATUS|DeliveryStatus|delivery_status)[:\s=]+(\d+)', descr, re.I)
+            if dm:
+                result["delivery_status"] = int(dm.group(1))
+            # SDS short text (simple text PDU often has TEXT:"..." or quoted)
+            tm = re.search(r'TEXT[:\s=]+"([^"]+)"', descr)
+            if tm:
+                result["text"] = tm.group(1)
+            # Source/dest SSI for SDS
+            ssm = re.search(r'(?:CallingSSI|SSI):\s*(\d+)', descr)
+            if ssm:
+                result["src_ssi"] = int(ssm.group(1))
+            dsm = re.search(r'(?:CalledSSI|DestSSI|DSSI):\s*(\d+)', descr)
+            if dsm:
+                result["dest_ssi"] = int(dsm.group(1))
         return result
 
     # Generic CMCE PDU with RESOURCE address (IDT = address type)
@@ -632,6 +651,9 @@ def main():
     # Reset on call_release. Latest-wins, attached to next call_setup/connect/grant.
     call_extras = {}
 
+    # Current LA (string) — tracked from netinfo emits, attached to ms_register events
+    current_la = [None]
+
     # Active ISSIs seen in RESOURCE stdout lines (any radio communicating on cell)
     # ssi -> {"last_seen": mono, "encr": int}
     active_ssi = {}
@@ -805,12 +827,46 @@ def main():
                                         "encr": encr,
                                     }
 
+                    def _emit_ms(evt):
+                        if current_la[0]:
+                            evt.setdefault("la", current_la[0])
+                        # Friendly summary string mirroring TTT format
+                        act = evt.get("action", "")
+                        ssi = evt.get("ssi")
+                        gssi = evt.get("gssi")
+                        utn = evt.get("update_type_name")
+                        result = evt.get("auth_result")
+                        if act == "authentication_demand":
+                            evt.setdefault("summary",
+                                "BS demands authentication" + (f". SSI: {ssi}" if ssi else ""))
+                        elif act == "authentication_result":
+                            evt.setdefault("summary",
+                                f"BS result to MS authentication: {result or 'unknown'}" +
+                                (f" SSI: {ssi}" if ssi else ""))
+                        elif act == "location_update_accept":
+                            parts = ["MS request for registration/authentication ACCEPTED"]
+                            if ssi: parts.append(f"for SSI: {ssi}")
+                            if gssi: parts.append(f"GSSI: {gssi}")
+                            extra = []
+                            if result: extra.append(result)
+                            if utn: extra.append(utn)
+                            tail = (" - " + " - ".join(extra)) if extra else ""
+                            evt.setdefault("summary", " ".join(parts) + tail)
+                        elif act == "location_update_reject":
+                            evt.setdefault("summary", "MS registration REJECTED" + (f" SSI: {ssi}" if ssi else ""))
+                        elif act == "location_update_command":
+                            evt.setdefault("summary", "BS sent location update COMMAND")
+                        elif act in ("group_attach", "group_detach"):
+                            verb = "attached" if act == "group_attach" else "detached"
+                            evt.setdefault("summary", f"MS {verb} from group GSSI: {gssi}")
+                        emit_meta(evt)
+
                     # MM PDU: D-LOCATION UPDATE ACCEPT → radio registered
                     if 'D-LOCATION UPDATE ACCEPT' in line:
                         mm = MM_LOC_UPDATE_ACCEPT_PATTERN.search(line)
                         if mm:
                             ut = int(mm.group(1))
-                            emit_meta({
+                            _emit_ms({
                                 "protocol": "TETRA",
                                 "type": "ms_register",
                                 "action": "location_update_accept",
@@ -819,13 +875,14 @@ def main():
                                 "update_type_name": MM_UPDATE_TYPE_NAMES.get(ut, 'unknown'),
                                 "addr_type": int(mm.group(2)),
                                 "subscr_class": int(mm.group(4), 16) if mm.group(4) else None,
+                                "auth_result": "Authentication successful or no authentication currently in progress",
                             })
 
                     # MM PDU: D-ATTACH/DETACH GROUP → group attach/detach
                     if 'D-ATTACH/DETACH GROUP:' in line:
                         am = MM_ATTACH_GROUP_PATTERN.search(line)
                         if am:
-                            emit_meta({
+                            _emit_ms({
                                 "protocol": "TETRA",
                                 "type": "ms_register",
                                 "action": "group_attach" if int(am.group(1)) == 0 else "group_detach",
@@ -834,25 +891,172 @@ def main():
                                 "attach_type": int(am.group(3)),
                             })
 
-                    # Other MM PDU types — bare name lines
-                    if 'D-AUTHENTICATION' in line and 'D-AUTH' in line.lstrip()[:20]:
-                        emit_meta({
-                            "protocol": "TETRA",
-                            "type": "ms_register",
-                            "action": "authentication_demand",
-                        })
+                    # D-AUTHENTICATION-DEMAND / D-AUTHENTICATION-RESULT (TETRA EN 300 392-7)
+                    if 'D-AUTHENTICATION' in line:
+                        lstripped = line.lstrip()[:40]
+                        ssi_m = re.search(r'\b(?:SSI|ISSI):(\d+)', line)
+                        ssi_val = int(ssi_m.group(1)) if ssi_m else None
+                        if 'D-AUTHENTICATION RESULT' in lstripped or 'D-AUTH-RESULT' in lstripped:
+                            # tetra-rx may print result code; default to "success"
+                            res_m = re.search(r'result[:\s=]+([A-Za-z _]+)', line, re.I)
+                            res = res_m.group(1).strip() if res_m else 'Authentication successful or no authentication currently in progress'
+                            _emit_ms({
+                                "protocol": "TETRA", "type": "ms_register",
+                                "action": "authentication_result", "ssi": ssi_val, "auth_result": res,
+                            })
+                        elif 'D-AUTH' in lstripped:
+                            _emit_ms({
+                                "protocol": "TETRA", "type": "ms_register",
+                                "action": "authentication_demand", "ssi": ssi_val,
+                            })
                     if 'D-LOCATION UPDATE REJECT' in line:
-                        emit_meta({
-                            "protocol": "TETRA",
-                            "type": "ms_register",
+                        ssi_m = re.search(r'\bSSI:(\d+)', line)
+                        _emit_ms({
+                            "protocol": "TETRA", "type": "ms_register",
                             "action": "location_update_reject",
+                            "ssi": int(ssi_m.group(1)) if ssi_m else None,
                         })
                     if 'D-LOCATION UPDATE COMMAND' in line:
-                        emit_meta({
-                            "protocol": "TETRA",
-                            "type": "ms_register",
+                        _emit_ms({
+                            "protocol": "TETRA", "type": "ms_register",
                             "action": "location_update_command",
                         })
+                    if 'D-LOCATION UPDATE PROCEEDING' in line:
+                        _emit_ms({
+                            "protocol": "TETRA", "type": "ms_register",
+                            "action": "location_update_proceeding",
+                        })
+                    if 'D-ATTACH/DETACH GROUP ID ACK' in line:
+                        _emit_ms({
+                            "protocol": "TETRA", "type": "ms_register",
+                            "action": "attach_detach_ack",
+                        })
+
+                    # CMCE PDUs with fields — Disconnect with cause is most important
+                    if 'D-DISCONNECT:' in line:
+                        dm = re.search(r'D-DISCONNECT:\s+Call Identifier:(\d+)\s+Disconnect cause:(\d+)', line)
+                        if dm:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "call_disconnect",
+                                "call_id": int(dm.group(1)),
+                                "disconnect_cause": int(dm.group(2)),
+                            })
+                    if 'D-CALL PROCEEDING:' in line:
+                        cm = re.search(r'D-CALL PROCEEDING:\s+Call Identifier:(\d+)\s+Timeout:(\d+)\s+Hook:(\d+)\s+Duplex:(\d+)\s+TX_Grant:(\d+)\s+TX_Perm:(\d+)', line)
+                        if cm:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "call_proceeding",
+                                "call_id": int(cm.group(1)),
+                                "call_timeout": int(cm.group(2)),
+                                "hook_method": int(cm.group(3)),
+                                "duplex": int(cm.group(4)),
+                                "tx_grant": int(cm.group(5)),
+                                "tx_perm": int(cm.group(6)),
+                            })
+                    if 'D-ALERT:' in line:
+                        am = re.search(r'D-ALERT:\s+Call Identifier:(\d+)\s+Timeout:(\d+)\s+Hook:(\d+)\s+Duplex:(\d+)\s+TX_Grant:(\d+)\s+TX_Perm:(\d+)', line)
+                        if am:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "call_alert",
+                                "call_id": int(am.group(1)),
+                                "call_timeout": int(am.group(2)),
+                                "hook_method": int(am.group(3)),
+                                "duplex": int(am.group(4)),
+                                "tx_grant": int(am.group(5)),
+                                "tx_perm": int(am.group(6)),
+                            })
+                    if 'D-CONNECT ACK:' in line:
+                        cm = re.search(r'D-CONNECT ACK:\s+Call Identifier:(\d+)\s+Timeout:(\d+)\s+TX_Grant:(\d+)\s+TX_Perm:(\d+)\s+NID:(\d+)', line)
+                        if cm:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "connect_ack",
+                                "call_id": int(cm.group(1)),
+                                "call_timeout": int(cm.group(2)),
+                                "tx_grant": int(cm.group(3)),
+                                "tx_perm": int(cm.group(4)),
+                                "nid": int(cm.group(5)),
+                            })
+                    if 'D-INFO:' in line:
+                        im = re.search(r'D-INFO:\s+Call Identifier:(\d+)\s+Reset_timer:(\d+)\s+TX_Perm:(\d+)', line)
+                        if im:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "call_info",
+                                "call_id": int(im.group(1)),
+                                "reset_timer": int(im.group(2)),
+                                "tx_perm": int(im.group(3)),
+                            })
+                    if 'D-TX CEASED:' in line:
+                        m = re.search(r'D-TX CEASED:\s+Call Identifier:(\d+)\s+TX_Request_permission:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "tx_state", "subtype": "ceased",
+                                "call_id": int(m.group(1)), "tx_request_perm": int(m.group(2)),
+                            })
+                    if 'D-TX CONTINUE:' in line:
+                        m = re.search(r'D-TX CONTINUE:\s+Call Identifier:(\d+)\s+Continue:(\d+)\s+TX_Perm:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "tx_state", "subtype": "continue",
+                                "call_id": int(m.group(1)), "continue": int(m.group(2)), "tx_perm": int(m.group(3)),
+                            })
+                    if 'D-TX INTERRUPT:' in line:
+                        m = re.search(r'D-TX INTERRUPT:\s+Call Identifier:(\d+)\s+TX_Perm:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "tx_state", "subtype": "interrupt",
+                                "call_id": int(m.group(1)), "tx_perm": int(m.group(2)),
+                            })
+                    if 'D-TX WAIT:' in line:
+                        m = re.search(r'D-TX WAIT:\s+Call Identifier:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "tx_state", "subtype": "wait",
+                                "call_id": int(m.group(1)),
+                            })
+                    if 'D-CALL RESTORE:' in line:
+                        m = re.search(r'D-CALL RESTORE:\s+Call Identifier:(\d+)\s+TX_Grant:(\d+)\s+TX_Perm:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "call_restore",
+                                "call_id": int(m.group(1)), "tx_grant": int(m.group(2)), "tx_perm": int(m.group(3)),
+                            })
+                    if 'D-FACILITY:' in line:
+                        m = re.search(r'D-FACILITY:\s+SSI:(\d+)\s+IDX:(\d+)', line)
+                        if m:
+                            emit_meta({
+                                "protocol": "TETRA", "type": "facility",
+                                "ssi": int(m.group(1)), "idx": int(m.group(2)),
+                            })
+
+                    # MM / security PDUs — emit as ms_register with new actions
+                    if 'D-OTAR' in line:
+                        _emit_ms({"protocol": "TETRA", "type": "ms_register", "action": "otar"})
+                    if 'D-CK CHANGE DEMAND' in line:
+                        _emit_ms({"protocol": "TETRA", "type": "ms_register", "action": "ck_change_demand"})
+                    if 'D-DISABLE' in line:
+                        _emit_ms({"protocol": "TETRA", "type": "ms_register", "action": "ms_disable"})
+                    if 'D-ENABLE' in line:
+                        _emit_ms({"protocol": "TETRA", "type": "ms_register", "action": "ms_enable"})
+                    if 'D-MM STATUS' in line:
+                        sm = re.search(r'D-MM STATUS[^\n]*?(?:status|code)[:\s=]+(\d+)', line, re.I)
+                        evt = {"protocol": "TETRA", "type": "ms_register", "action": "mm_status"}
+                        if sm:
+                            evt["mm_status_code"] = int(sm.group(1))
+                        _emit_ms(evt)
+
+                    # MLE PDUs — handover / restoration
+                    if 'D-NEW CELL' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "new_cell"})
+                    if 'D-PREPARE FAIL' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "prepare_fail"})
+                    if 'D-RESTORE ACK' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "restore_ack"})
+                    if 'D-RESTORE FAIL' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "restore_fail"})
+                    if 'D-CHANNEL RESPONSE' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "channel_response"})
+                    if 'D-NWRK BROADCAST EXT' in line:
+                        emit_meta({"protocol": "TETRA", "type": "cell_change", "action": "nwrk_broadcast_ext"})
 
         except (ValueError, OSError):
             pass
@@ -986,18 +1190,20 @@ def main():
         if meta is not None:
             now = time.monotonic()
             msg_type = meta.get("type")
+            # Count ALL bursts for rate calculation (before throttle)
+            if msg_type == "burst":
+                burst_count[0] += 1
+                elapsed = now - burst_window_start[0]
+                if elapsed >= 2.0:
+                    burst_rate[0] = burst_count[0] / elapsed
+                    burst_count[0] = 0
+                    burst_window_start[0] = now
+
             rate_limit = RATE_LIMITS.get(msg_type, 0)
             last_t = last_emit_time.get(msg_type, 0)
 
             if now - last_t >= rate_limit:
                 if msg_type == "burst":
-                    # Count bursts for rate calculation
-                    burst_count[0] += 1
-                    elapsed = now - burst_window_start[0]
-                    if elapsed >= 2.0:
-                        burst_rate[0] = burst_count[0] / elapsed
-                        burst_count[0] = 0
-                        burst_window_start[0] = now
 
                     with state_lock:
                         meta["timeslots"] = {str(k): v for k, v in ts_usage.items()}
@@ -1015,6 +1221,10 @@ def main():
                             meta["service_details"] = network_state["service_details"]
                         if network_state["hyperframe"] is not None:
                             meta["hyperframe"] = network_state["hyperframe"]
+                    # Track current LA for ms_register events
+                    la_val = meta.get("la")
+                    if la_val:
+                        current_la[0] = str(la_val)
 
                 # Add call_type to call_setup messages
                 if msg_type == "call_setup":
