@@ -180,6 +180,8 @@ if [[ "$MODE" == "uninstall" ]]; then
     # Remove CSDR modules
     rm -f "$OWRX_PYTHON/csdr/module/tetra.py"
     rm -f "$OWRX_PYTHON/csdr/chain/tetra.py"
+    rm -f "$OWRX_PYTHON/csdr/module/tetra_dmo.py"
+    rm -f "$OWRX_PYTHON/csdr/chain/tetra_dmo.py"
     log "Removed CSDR modules"
 
     # Restore backed-up OpenWebRX+ files
@@ -290,7 +292,9 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Source file checks
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-for f in tetra_decoder.py tetra_demod.py csdr_module_tetra.py csdr_chain_tetra.py tetra_panel.js tetra_panel.html; do
+for f in tetra_decoder.py tetra_demod.py csdr_module_tetra.py csdr_chain_tetra.py tetra_panel.js tetra_panel.html \
+         tetra_dmo_decoder.py csdr_module_tetra_dmo.py csdr_chain_tetra_dmo.py \
+         dmo_l1_chain.py dmo_pdu_parser.py; do
     [[ -f "$SCRIPT_DIR/$f" ]] || error "Source file missing: $SCRIPT_DIR/$f"
 done
 
@@ -384,15 +388,20 @@ log "Step $STEP_BASE/$STEP_TOTAL: Deploying decoder scripts..."
 mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/tetra_decoder.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/tetra_demod.py" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/tetra_decoder.py"
-log "Deployed tetra_decoder.py and tetra_demod.py"
+cp "$SCRIPT_DIR/tetra_dmo_decoder.py" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/dmo_l1_chain.py" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/dmo_pdu_parser.py" "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/tetra_decoder.py" "$INSTALL_DIR/tetra_dmo_decoder.py"
+log "Deployed tetra_decoder.py + tetra_demod.py + DMO modules"
 
 # ── Install CSDR module/chain ──
 STEP=$((STEP_BASE + 1))
 log "Step $STEP/$STEP_TOTAL: Installing CSDR module..."
 cp "$SCRIPT_DIR/csdr_module_tetra.py" "$OWRX_PYTHON/csdr/module/tetra.py"
 cp "$SCRIPT_DIR/csdr_chain_tetra.py" "$OWRX_PYTHON/csdr/chain/tetra.py"
-log "Installed csdr/module/tetra.py and csdr/chain/tetra.py"
+cp "$SCRIPT_DIR/csdr_module_tetra_dmo.py" "$OWRX_PYTHON/csdr/module/tetra_dmo.py"
+cp "$SCRIPT_DIR/csdr_chain_tetra_dmo.py" "$OWRX_PYTHON/csdr/chain/tetra_dmo.py"
+log "Installed csdr/module/tetra{,_dmo}.py and csdr/chain/tetra{,_dmo}.py"
 
 # ── Patch OpenWebRX+ (modes.py, feature.py, dsp.py) ──
 STEP=$((STEP_BASE + 2))
@@ -529,6 +538,97 @@ else
     log "  feature.py already patched"
 fi
 
+# --- Patch modes.py for TETRA DMO ---
+if ! grep -q '"tetra_dmo"' "$OWRX_PYTHON/owrx/modes.py"; then
+    log "  Patching modes.py for TETRA DMO..."
+    python3 << 'PYEOF'
+modes_file = "/usr/lib/python3/dist-packages/owrx/modes.py"
+with open(modes_file, "r") as f:
+    lines = f.readlines()
+
+inserted = False
+for i, line in enumerate(lines):
+    if '"tetra"' in line and 'AnalogMode' in line:
+        indent = len(line) - len(line.lstrip())
+        dmo_line = ' ' * indent + 'AnalogMode("tetra_dmo", "TETRA DMO", bandpass=Bandpass(-12500, 12500), requirements=["tetra_dmo_decoder"], squelch=False),\n'
+        lines.insert(i + 1, dmo_line)
+        inserted = True
+        break
+
+if inserted:
+    with open(modes_file, "w") as f:
+        f.writelines(lines)
+    import py_compile, shutil, os
+    try:
+        py_compile.compile(modes_file, doraise=True)
+        print("    TETRA DMO mode added to modes.py")
+    except py_compile.PyCompileError as e:
+        backup = modes_file + ".bak.pre-tetra"
+        if os.path.isfile(backup):
+            shutil.copy2(backup, modes_file)
+            print("    Restored modes.py from backup; DMO patch failed")
+        raise SystemExit(1)
+else:
+    print("    WARNING: TETRA TMO entry not found, can't add DMO")
+PYEOF
+else
+    log "  modes.py already has tetra_dmo"
+fi
+
+# --- Patch feature.py for TETRA DMO ---
+if ! grep -q 'tetra_dmo_decoder' "$OWRX_PYTHON/owrx/feature.py"; then
+    log "  Patching feature.py for TETRA DMO..."
+    python3 << 'PYEOF'
+feature_file = "/usr/lib/python3/dist-packages/owrx/feature.py"
+with open(feature_file, "r") as f:
+    content = f.read()
+
+# Dodaj tetra_dmo_decoder do features dict — po istniejącym tetra_decoder
+import re
+m = re.search(r'("tetra_decoder"\s*:\s*\[[^\]]+\])', content)
+if m:
+    insert_pos = m.end()
+    addition = ',\n            "tetra_dmo_decoder": ["tetra_dmo_demod"]'
+    content = content[:insert_pos] + addition + content[insert_pos:]
+    # Dodaj has_tetra_dmo_demod method — po has_tetra_demod
+    method_code = '''
+    def has_tetra_dmo_demod(self):
+        """Check if TETRA DMO live decoder is available."""
+        import os
+        tetra_dir = "/opt/openwebrx-tetra"
+        for fn in ("tetra_dmo_decoder.py", "dmo_l1_chain.py", "dmo_pdu_parser.py", "tetra_demod.py"):
+            if not os.path.isfile(os.path.join(tetra_dir, fn)):
+                return False
+        try:
+            import gnuradio
+        except ImportError:
+            return False
+        return True
+'''
+    # Wstaw method po has_tetra_demod
+    tm = re.search(r'(def has_tetra_demod\(self\):.*?return has_decoder and has_tetra_rx and has_gnuradio\n)',
+                   content, re.DOTALL)
+    if tm:
+        content = content[:tm.end()] + method_code + content[tm.end():]
+    with open(feature_file, "w") as f:
+        f.write(content)
+    import py_compile, shutil, os
+    try:
+        py_compile.compile(feature_file, doraise=True)
+        print("    TETRA DMO feature detection added")
+    except py_compile.PyCompileError as e:
+        backup = feature_file + ".bak.pre-tetra"
+        if os.path.isfile(backup):
+            shutil.copy2(backup, feature_file)
+            print("    Restored feature.py; DMO patch failed")
+        raise SystemExit(1)
+else:
+    print("    WARNING: tetra_decoder mapping not found, can't add DMO")
+PYEOF
+else
+    log "  feature.py already has tetra_dmo_decoder"
+fi
+
 # --- Patch dsp.py ---
 if ! grep -q '"tetra"' "$OWRX_PYTHON/owrx/dsp.py"; then
     log "  Patching dsp.py..."
@@ -588,6 +688,57 @@ else:
 PYEOF
 else
     log "  dsp.py already patched"
+fi
+
+# --- Patch dsp.py for TETRA DMO ---
+if ! grep -q '"tetra_dmo"' "$OWRX_PYTHON/owrx/dsp.py"; then
+    log "  Patching dsp.py for TETRA DMO..."
+    python3 << 'PYEOF'
+dsp_file = "/usr/lib/python3/dist-packages/owrx/dsp.py"
+with open(dsp_file, "r") as f:
+    lines = f.readlines()
+
+inserted = False
+for i, line in enumerate(lines):
+    if 'elif demod == "tetra"' in line:
+        indent = len(line) - len(line.lstrip())
+        body_indent = ' ' * (indent + 4)
+        # Znajdź koniec bloku tetra (linia z "return Tetra()" + następna)
+        j = i + 1
+        while j < len(lines):
+            stripped = lines[j].lstrip()
+            cur_indent = len(lines[j]) - len(stripped)
+            if cur_indent <= indent and stripped and (stripped.startswith('elif ') or stripped.startswith('else:')):
+                break
+            j += 1
+        dmo_block = [
+            ' ' * indent + 'elif demod == "tetra_dmo":\n',
+            body_indent + 'from csdr.chain.tetra_dmo import TetraDmo\n',
+            body_indent + 'return TetraDmo()\n',
+        ]
+        for k, dl in enumerate(dmo_block):
+            lines.insert(j + k, dl)
+        inserted = True
+        break
+
+if inserted:
+    with open(dsp_file, "w") as f:
+        f.writelines(lines)
+    import py_compile, shutil, os
+    try:
+        py_compile.compile(dsp_file, doraise=True)
+        print("    TETRA DMO routing added to dsp.py")
+    except py_compile.PyCompileError as e:
+        backup = dsp_file + ".bak.pre-tetra"
+        if os.path.isfile(backup):
+            shutil.copy2(backup, dsp_file)
+            print("    Restored dsp.py; DMO patch failed")
+        raise SystemExit(1)
+else:
+    print("    WARNING: 'elif demod == \"tetra\"' not found, can't add DMO")
+PYEOF
+else
+    log "  dsp.py already has tetra_dmo"
 fi
 
 # ── Install frontend (HTML, JS, CSS) ──

@@ -6,10 +6,29 @@ import shutil
 import os
 import subprocess
 
-# 1. Deploy decoder
+# 1. Deploy decoder + DMO modules (jeśli /tmp ma)
 shutil.copy("/tmp/tetra_decoder.py", "/opt/openwebrx-tetra/tetra_decoder.py")
 os.chmod("/opt/openwebrx-tetra/tetra_decoder.py", 0o755)
 print("tetra_decoder.py deployed")
+
+# DMO live decoder + jego deps (jeśli /tmp ma — silent skip jeśli nie)
+DMO_FILES = ["tetra_dmo_decoder.py", "dmo_l1_chain.py", "dmo_pdu_parser.py", "tetra_demod.py"]
+for fn in DMO_FILES:
+    src = f"/tmp/{fn}"
+    if os.path.isfile(src):
+        shutil.copy(src, f"/opt/openwebrx-tetra/{fn}")
+        if fn.endswith("decoder.py") or fn == "tetra_demod.py":
+            os.chmod(f"/opt/openwebrx-tetra/{fn}", 0o755)
+        print(f"{fn} deployed")
+
+# csdr module/chain DMO
+for src_name, dst_path in [
+    ("/tmp/csdr_module_tetra_dmo.py", "/usr/lib/python3/dist-packages/csdr/module/tetra_dmo.py"),
+    ("/tmp/csdr_chain_tetra_dmo.py",  "/usr/lib/python3/dist-packages/csdr/chain/tetra_dmo.py"),
+]:
+    if os.path.isfile(src_name):
+        shutil.copy(src_name, dst_path)
+        print(f"deployed {dst_path}")
 
 # 2. Update MetaPanel.js
 js_file = "/usr/lib/python3/dist-packages/htdocs/lib/MetaPanel.js"

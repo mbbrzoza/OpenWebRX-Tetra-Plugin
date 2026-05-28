@@ -216,7 +216,13 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         win.querySelector('.ttt-dmo-list').style.display = name === 'dmo' ? 'block' : 'none';
     };
     tabs.forEach(function(t){
-        t.addEventListener('click', function(){ setActive(t.getAttribute('data-tab')); });
+        t.addEventListener('click', function(){
+            setActive(t.getAttribute('data-tab'));
+            // Auto-refresh DMO live view when tab opened
+            if (t.getAttribute('data-tab') === 'dmo' && self._dmoLive && self._dmoLive.pdus && self._dmoLive.pdus.length) {
+                self._renderDmoLive();
+            }
+        });
     });
     setActive('activity');
 
@@ -816,6 +822,52 @@ TetraMetaPanel.prototype._loadDmoJson = function() {
     this._renderDmoData(this._DMO_DEMO_DATA, 'embedded snapshot (test_data/dmo_bursts.bin, 47 burstów z 433.400 MHz Tetrapack)');
 };
 
+TetraMetaPanel.prototype._renderDmoLive = function() {
+    var list = this._tttWin && this._tttWin.querySelector('.ttt-dmo-list');
+    if (!list || !this._dmoLive) return;
+    var dl = this._dmoLive;
+    var pdus = dl.pdus || [];
+    if (!pdus.length) return;  // nothing yet, leave initial placeholder
+    var stats = dl.stats || {};
+    var lastStats = dl.lastStats || {};
+
+    var html = '';
+    html += '<div style="color:#789;font-size:0.85em;margin-bottom:6px">źródło: <b style="color:#51cf66">LIVE</b> (z tetra_dmo_decoder.py) <button class="ttt-dmo-load" style="margin-left:6px;background:#1a3050;border:1px solid #234;color:#cde;padding:1px 6px;cursor:pointer;border-radius:2px;font-size:0.85em">demo static</button></div>';
+    html += '<div style="background:#021;border:1px solid #234;padding:4px 6px;margin-bottom:6px;border-radius:2px">';
+    html += '<div><b style="color:#51cf66">Statystyki live:</b></div>';
+    var sst = lastStats.sch_s_total || 0;
+    var sso = lastStats.sch_s_ok || 0;
+    var sho = lastStats.sch_h_ok || 0;
+    html += '<div>SCH/S CRC: <b>' + sso + '/' + sst + '</b>';
+    if (sst > 0) html += ' (' + (100*sso/sst).toFixed(1) + '%)';
+    html += '  |  SCH/H CRC OK: <b>' + sho + '</b>  |  PDU total: <b>' + stats.n_pdus + '</b></div>';
+    html += '</div>';
+    var renderDict = function(title, dict) {
+        if (!dict || !Object.keys(dict).length) return '';
+        var lines = Object.keys(dict).map(function(k){ return k + ' (' + dict[k] + '×)'; });
+        return '<div><span style="color:#789">' + title + ':</span> ' + lines.join(', ') + '</div>';
+    };
+    html += '<div style="background:#021;border:1px solid #234;padding:4px 6px;margin-bottom:6px;border-radius:2px">';
+    html += renderDict('Source SSI', stats.src_ssis);
+    html += renderDict('Dest SSI', stats.dst_ssis);
+    html += renderDict('Message types', stats.msg_types);
+    html += renderDict('MNI', stats.mni_seen);
+    html += '</div>';
+    html += '<div style="color:#789;font-size:0.85em;margin-bottom:4px">Live PDU stream (najnowsze pierwsze, max 200):</div>';
+    pdus.slice(0, 50).forEach(function(p, i){
+        var bothOk = p.both_ok ? '<span style="color:#51cf66">✓both</span>' : '<span style="color:#fa5">S only</span>';
+        html += '<div style="padding:2px 4px;border-bottom:1px solid #122">';
+        html += '<span style="color:#789">' + (p.ts || '?') + ' #' + p.burst_idx + '</span> ' + bothOk + '<br>';
+        html += '<span style="color:#cde">' + (p.summary || '').replace(/</g, '&lt;') + '</span>';
+        html += '</div>';
+    });
+    list.innerHTML = html;
+    // Re-bind demo button
+    var demoBtn = list.querySelector('.ttt-dmo-load');
+    var self = this;
+    if (demoBtn) demoBtn.addEventListener('click', function(){ self._loadDmoJson(); });
+};
+
 TetraMetaPanel.prototype._renderDmoData = function(data, srcPath) {
     var list = this._tttWin && this._tttWin.querySelector('.ttt-dmo-list');
     if (!list) return;
@@ -1125,6 +1177,56 @@ TetraMetaPanel.prototype.update = function(data) {
         if (data.tetra_time) {
             el.find('.tetra-tetra-time').text(this._formatTetraTime(data.tetra_time));
         }
+    }
+    else if (type === 'dmo_burst') {
+        // Live DMO burst (DMAC-SYNC / DPRES-SYNC) z tetra_dmo_decoder.py
+        if (!this._dmoLive) this._dmoLive = { pdus: [], stats: { sch_s_ok: 0, sch_h_ok: 0, n_pdus: 0,
+            src_ssis: {}, dst_ssis: {}, msg_types: {}, mni_seen: {} } };
+        var dl = this._dmoLive;
+        dl.stats.n_pdus++;
+        if (data.src !== null && data.src !== undefined) {
+            var k = String(data.src);
+            dl.stats.src_ssis[k] = (dl.stats.src_ssis[k] || 0) + 1;
+        }
+        if (data.dst !== null && data.dst !== undefined) {
+            var k2 = String(data.dst);
+            dl.stats.dst_ssis[k2] = (dl.stats.dst_ssis[k2] || 0) + 1;
+        }
+        if (data.msg_type) {
+            dl.stats.msg_types[data.msg_type] = (dl.stats.msg_types[data.msg_type] || 0) + 1;
+        }
+        if (data.mcc !== null && data.mnc !== null && data.mcc !== undefined) {
+            var mk = data.mcc + '-' + data.mnc;
+            dl.stats.mni_seen[mk] = (dl.stats.mni_seen[mk] || 0) + 1;
+        }
+        dl.pdus.unshift({
+            burst_idx: dl.stats.n_pdus,
+            both_ok: data.sync_type === 'DMAC-SYNC' && data.msg_type ? true : (data.msg_type !== ''),
+            summary: data.summary || '',
+            msg: data.msg_type || '',
+            src: data.src, dst: data.dst,
+            mcc: data.mcc, mnc: data.mnc,
+            tn: data.tn, fn: data.fn,
+            ts: this._timestamp()
+        });
+        if (dl.pdus.length > 200) dl.pdus.length = 200;
+        // Update counter
+        if (this._tttWin) {
+            var cntEl = this._tttWin.querySelector('.ttt-dmo-count');
+            if (cntEl) cntEl.textContent = '(' + dl.stats.n_pdus + ')';
+            // Auto-refresh DMO tab jeśli aktywny
+            var dmoTab = this._tttWin.querySelector('.ttt-tab[data-tab="dmo"]');
+            if (dmoTab && dmoTab.getAttribute('data-active') === '1') {
+                this._renderDmoLive();
+            }
+        }
+        return;
+    }
+    else if (type === 'dmo_stats') {
+        // Periodic DMO summary z decoder
+        if (!this._dmoLive) this._dmoLive = { pdus: [], stats: {} };
+        this._dmoLive.lastStats = data;
+        return;
     }
     else if (type === 'encinfo') {
         el.find('.tetra-encrypted').text(data.encrypted ? 'TAK (' + data.enc_mode + ')' : 'NIE')
