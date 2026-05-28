@@ -36,34 +36,48 @@ export TETRA_OFFSET_HZ=1000
 Wartość ~1000 Hz pasuje do całego pasma 380-470 MHz (PPM offset jest ~1 kHz w
 tym zakresie z dokładnością ~13 Hz, co mieści się w FLL capture range ±25 kHz).
 
-### RTL-SDR Blog V4 na 192.168.11.22 (wskaźnik TCXO)
+### RTL-SDR Blog V4 na 192.168.11.22 (zadeklarowany TCXO)
 
-**PPM = -16.89** (sesja 2026-05-28 wieczór, 50 dB SNR, 0% clip)
+**PPM = -14.45** (po warmup ~6-10s, 2026-05-28 wieczór)
 
-Pomiar: rtl_sdr -f 438375000 -s 240000 -g 30 -n 1200000, 5 sek na carrier
-TETRA BS @ 438.375 MHz, peak -7403 Hz.
+3 niezależne pomiary 5s na TETRA BS 438.375 MHz, gain 30:
+- pomiar 1 (crystal zimny): -7.49 ppm
+- pomiar 2 (~3s później): -14.45 ppm
+- pomiar 3 (~3s później): -14.46 ppm
+
+→ Po warmup crystal stabilizuje na **-14.45/-14.46** (różnica <0.01 ppm).
 
 | Frequency (MHz) | Offset (Hz) |
 |---|---|
-| 380 | -6417 |
-| 410 | -6924 |
-| 433.400 | -7319 |
-| 433.450 | -7319 |
-| 438.375 | -7403 |
-| 460 | -7768 |
+| 380 | -5491 |
+| 410 | -5925 |
+| 433.400 | -6263 |
+| 433.450 | -6263 |
+| 438.375 | -6335 |
+| 460 | -6647 |
 
-Uwaga: -16.89 ppm to dużo dla TCXO (typowo ±1-2 ppm). Możliwe że klon RTL V4
-ma zwykły XO mimo deklaracji TCXO. Niezależnie — PPM stabilny, wiarygodny do
-użycia.
+Uwaga: -14.45 ppm to **dużo dla TCXO** (typowo ±1-2 ppm). Możliwe że klon
+RTL V4 ma zwykły XO mimo deklaracji TCXO. Niezależnie — PPM stabilny po
+warmup, wiarygodny do użycia.
+
+**KRYTYCZNE**: pierwsze 10-30 sekund po starcie RTL crystal drifti silnie
+(-7 → -14.5 ppm w ciągu kilku sekund). Dla precyzyjnej kalibracji odczekać
+30s przed pomiarem.
 
 Dla OWRX z tym RTL:
 ```bash
-echo "-7319" > /opt/openwebrx-tetra/offset.txt   # dla 433.400
-# lub w OWRX settings: rtlsdr.ppm=-17
+echo "-6263" > /opt/openwebrx-tetra/offset.txt   # dla 433.400 (po warmup)
+# lub w OWRX settings: rtlsdr.ppm=-14
 ```
 
-Wcześniejszy pomiar tej sesji RTL ("oryginalny") wykazał PPM=-74 — to był
-inny exemplar lub klops. RTL V4 z TCXO znacznie bliżej standardu.
+Wymagana sekwencja przed użyciem RTL:
+```bash
+sudo modprobe -rf dvb_usb_rtl28xxu rtl2832_sdr rtl2832
+# lub permanent: /etc/modprobe.d/blacklist-rtl.conf
+```
+
+Wcześniejszy pomiar tej sesji innym RTL wykazał PPM=-74 — to był inny
+exemplar bez TCXO. RTL V4 znacznie bliżej standardu mimo wciąż dużego -14.
 
 ### SDRplay RSP1 na 192.168.11.22 — niezkalibrowane
 
