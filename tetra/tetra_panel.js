@@ -147,10 +147,12 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '      <span class="ttt-tab ttt-tab-activity" data-tab="activity" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#1a3050;color:#cde;font-size:0.85em">Aktywność <span class="ttt-log-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-msreg" data-tab="msreg" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">MS Rejestracje <span class="ttt-msreg-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-sds" data-tab="sds" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">SDS <span class="ttt-sds-count" style="color:#789">(0)</span></span>'+
+        '      <span class="ttt-tab ttt-tab-dmo" data-tab="dmo" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="DM-MS direct mode signalling z pliku JSON (offline analiza)">DMO <span class="ttt-dmo-count" style="color:#789">(0)</span></span>'+
         '    </div>'+
         '    <div class="ttt-log" style="font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak zdarzeń</div>'+
         '    <div class="ttt-msreg-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak rejestracji</div>'+
         '    <div class="ttt-sds-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak SDS</div>'+
+        '    <div class="ttt-dmo-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4"><div style="color:#789">załaduj <code>dmo_demo.json</code> przyciskiem [Load DMO JSON] (offline DMAC-SYNC PDU)</div><button class="ttt-dmo-load" style="margin-top:6px;background:#1a3050;border:1px solid #234;color:#cde;padding:3px 10px;cursor:pointer;border-radius:2px">Load DMO JSON</button></div>'+
         '  </div>'+
         '</div>';
     document.body.appendChild(win);
@@ -178,6 +180,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         }
         self._stashCurrent();
     });
+    win.querySelector('.ttt-dmo-load').addEventListener('click', function(){ self._loadDmoJson(); });
     win.querySelector('.ttt-labels-btn').addEventListener('click', function(){ self._showLabelsEditor(); });
     win.querySelector('.ttt-filters-btn').addEventListener('click', function(){ self._showFilterEditor(); });
     win.querySelector('.ttt-export').addEventListener('click', function(){ self._exportCsv(); });
@@ -210,6 +213,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         win.querySelector('.ttt-log').style.display = name === 'activity' ? 'block' : 'none';
         win.querySelector('.ttt-msreg-list').style.display = name === 'msreg' ? 'block' : 'none';
         win.querySelector('.ttt-sds-list').style.display = name === 'sds' ? 'block' : 'none';
+        win.querySelector('.ttt-dmo-list').style.display = name === 'dmo' ? 'block' : 'none';
     };
     tabs.forEach(function(t){
         t.addEventListener('click', function(){ setActive(t.getAttribute('data-tab')); });
@@ -801,6 +805,54 @@ TetraMetaPanel.prototype._isLockedOut = function(gssi) {
 TetraMetaPanel.prototype._isHoldFiltered = function(gssi) {
     if (!this._gssiHold) return false;
     return String(gssi) !== this._gssiHold;
+};
+
+// Embedded DMO demo snapshot — wygenerowane przez:
+//   python3 dmo_parse_to_json.py test_data/dmo_bursts.bin /tmp/dmo_demo.json
+// z 47 burstów DMO IQ z 433.400 (Tetrapack). Pełen offline dekod ramki signaling.
+TetraMetaPanel.prototype._DMO_DEMO_DATA = {"meta":{"source":"test_data/dmo_bursts.bin","total_bursts":47,"sch_s_ok":12,"sch_h_ok":9,"both_ok":8},"stats":{"unique_src_ssi":{"2600824":8},"unique_dst_ssi":{"20":8},"message_types":{"DM-OCCUPIED":2,"DM-TX CEASED":1,"DM-RESERVED":5},"mni_seen":{"901-9999":8}},"pdus":[{"burst_idx":1,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=1 FN=18 enc=clear msg=DM-OCCUPIED src=2600824 dst=20 MNI=901-9999","msg":"DM-OCCUPIED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":1,"fn":18},{"burst_idx":2,"both_ok":false,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=18 enc=clear","msg":"","src":null,"dst":null,"mcc":null,"mnc":null,"tn":3,"fn":18},{"burst_idx":4,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=12 enc=clear msg=DM-OCCUPIED src=2600824 dst=20 MNI=901-9999","msg":"DM-OCCUPIED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":12},{"burst_idx":5,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=15 enc=clear msg=DM-TX CEASED src=2600824 dst=20 MNI=901-9999","msg":"DM-TX CEASED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":15},{"burst_idx":7,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=1 FN=18 enc=clear msg=DM-RESERVED src=2600824 dst=20 MNI=901-9999","msg":"DM-RESERVED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":1,"fn":18},{"burst_idx":8,"both_ok":false,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=18 enc=clear","msg":"","src":null,"dst":null,"mcc":null,"mnc":null,"tn":3,"fn":18},{"burst_idx":10,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=6 enc=clear msg=DM-RESERVED src=2600824 dst=20 MNI=901-9999","msg":"DM-RESERVED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":6},{"burst_idx":11,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=12 enc=clear msg=DM-RESERVED src=2600824 dst=20 MNI=901-9999","msg":"DM-RESERVED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":12},{"burst_idx":12,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=18 enc=clear msg=DM-RESERVED src=2600824 dst=20 MNI=901-9999","msg":"DM-RESERVED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":18},{"burst_idx":22,"both_ok":false,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=18 enc=clear","msg":"","src":null,"dst":null,"mcc":null,"mnc":null,"tn":3,"fn":18},{"burst_idx":24,"both_ok":false,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=12 enc=clear","msg":"","src":null,"dst":null,"mcc":null,"mnc":null,"tn":3,"fn":12},{"burst_idx":25,"both_ok":true,"summary":"[DMAC-SYNC] sys=0xd comm=MS-MS  TN=3 FN=18 enc=clear msg=DM-RESERVED src=2600824 dst=20 MNI=901-9999","msg":"DM-RESERVED","src":2600824,"dst":20,"mcc":901,"mnc":9999,"tn":3,"fn":18}]};
+
+TetraMetaPanel.prototype._loadDmoJson = function() {
+    this._renderDmoData(this._DMO_DEMO_DATA, 'embedded snapshot (test_data/dmo_bursts.bin, 47 burstów z 433.400 MHz Tetrapack)');
+};
+
+TetraMetaPanel.prototype._renderDmoData = function(data, srcPath) {
+    var list = this._tttWin && this._tttWin.querySelector('.ttt-dmo-list');
+    if (!list) return;
+    var meta = data.meta || {};
+    var stats = data.stats || {};
+    var pdus = data.pdus || [];
+    this._tttWin.querySelector('.ttt-dmo-count').textContent = '(' + pdus.length + ')';
+
+    var html = '';
+    html += '<div style="color:#789;font-size:0.85em;margin-bottom:6px">źródło: <code>' + srcPath + '</code></div>';
+    html += '<div style="background:#021;border:1px solid #234;padding:4px 6px;margin-bottom:6px;border-radius:2px">';
+    html += '<div><b style="color:#51cf66">Statystyki dekodowania:</b></div>';
+    html += '<div>total burstów: <b>' + meta.total_bursts + '</b></div>';
+    html += '<div>SCH/S CRC OK: <b>' + meta.sch_s_ok + '</b>  SCH/H CRC OK: <b>' + meta.sch_h_ok + '</b>  both OK: <b>' + meta.both_ok + '</b></div>';
+    html += '</div>';
+
+    var renderDict = function(title, dict) {
+        if (!dict || !Object.keys(dict).length) return '';
+        var lines = Object.keys(dict).map(function(k){ return k + ' (' + dict[k] + '×)'; });
+        return '<div><span style="color:#789">' + title + ':</span> ' + lines.join(', ') + '</div>';
+    };
+    html += '<div style="background:#021;border:1px solid #234;padding:4px 6px;margin-bottom:6px;border-radius:2px">';
+    html += renderDict('Source SSI', stats.unique_src_ssi);
+    html += renderDict('Dest SSI', stats.unique_dst_ssi);
+    html += renderDict('Message types', stats.message_types);
+    html += renderDict('MNI', stats.mni_seen);
+    html += '</div>';
+
+    html += '<div style="color:#789;font-size:0.85em;margin-bottom:4px">Lista sparsowanych PDU (' + pdus.length + '):</div>';
+    pdus.forEach(function(p, i){
+        var bothOk = p.both_ok ? '<span style="color:#51cf66">✓both</span>' : '<span style="color:#fa5">S only</span>';
+        html += '<div style="padding:2px 4px;border-bottom:1px solid #122">';
+        html += '<span style="color:#789">#' + i + ' burst=' + p.burst_idx + '</span> ' + bothOk + '<br>';
+        html += '<span style="color:#cde">' + (p.summary || '').replace(/</g, '&lt;') + '</span>';
+        html += '</div>';
+    });
+    list.innerHTML = html;
 };
 
 TetraMetaPanel.prototype._exportCsv = function() {
