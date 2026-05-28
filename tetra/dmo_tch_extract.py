@@ -152,9 +152,10 @@ def main():
     sys.stderr.write(f"      {len(bits)} bitów ({sec:.1f}s)\n")
 
     sys.stderr.write(f"[2/5] szukam DNB (n_bits + p_bits)\n")
-    hits = find_pattern(bits, N_BITS, max_errors=2)
-    hits += find_pattern(bits, P_BITS, max_errors=2)
-    # Posortuj po pozycji
+    # max_err=1 zamiast 2: random baseline (max_err=2) daje ~40 fake'ów na 60s.
+    # @max_err=1 mamy 76 hits z których ~26 ma regularny gap=slot.
+    hits = find_pattern(bits, N_BITS, max_errors=1)
+    hits += find_pattern(bits, P_BITS, max_errors=1)
     hits.sort(key=lambda x: x[0])
     sys.stderr.write(f"      {len(hits)} kandydat. DNB pozycji\n")
 
@@ -176,7 +177,8 @@ def main():
     subprocess.os.close(pipe_r)
 
     n_sent = 0
-    for pos, _polarity in hits:
+    n_inverted = 0
+    for pos, polarity in hits:
         blk1_start = pos - BLK1_BEFORE_TRAIN
         blk2_start = pos + BLK2_AFTER_TRAIN
         blk2_end = blk2_start + BLK_LEN_BITS
@@ -185,6 +187,11 @@ def main():
         blk1 = bits[blk1_start:blk1_start + BLK_LEN_BITS]
         blk2 = bits[blk2_start:blk2_end]
         t5 = np.concatenate([blk1, blk2])
+        # Jeśli training seq pasował tylko w odwróconej polarności (DQPSK 180°),
+        # cały burst też jest zanegowany — odwracamy bity przed descramble.
+        if polarity == 0:
+            t5 = (1 - t5).astype(np.int8)
+            n_inverted += 1
         t4 = (t5 ^ scramb_432).astype(np.int8)
         block = pack_block_690(t4)
         try:
@@ -194,7 +201,7 @@ def main():
         except BrokenPipeError:
             break
 
-    sys.stderr.write(f"      wysłano {n_sent} ramek TCH do cdecoder\n")
+    sys.stderr.write(f"      wysłano {n_sent} ramek TCH do cdecoder (z czego {n_inverted} odwróconych)\n")
     try:
         cdec.stdin.close()
     except Exception:
