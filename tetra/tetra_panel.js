@@ -1301,6 +1301,36 @@ TetraMetaPanel.prototype.update = function(data) {
         }
         this._activeSsiPrev = currentSet;
     }
+    else if (type === 'sync_stat') {
+        // TETRA sync training-sequence (y, 38b) detection rate from tetra_demod.
+        // Same pattern is used in TMO downlink SB and DMO DSB; rate context
+        // alone hints at presence but does not yet disambiguate. Stored on
+        // the panel so the DMO badge can light up when there is sync activity
+        // but no netinfo (= almost certainly not TMO downlink we're decoding).
+        this._lastSyncRate = data.hits_per_s || 0;
+        this._lastSyncTs = Date.now();
+        var rate = this._lastSyncRate;
+        var hasNetinfo = !!(this._currentCall || (el.find('.tetra-mcc').text() !== '---'));
+        var dmoHint = (rate > 0.3 && !hasNetinfo);
+        var badge = el.find('.tetra-dmo-badge');
+        if (badge.length === 0) {
+            el.find('.tetra-burst-rate').after(
+                '<span class="tetra-dmo-badge" style="margin-left:8px;font-size:0.85em;padding:1px 5px;border-radius:3px;display:none" title="Wykryto sync TETRA bez kontekstu TMO — możliwy DMO"></span>'
+            );
+            badge = el.find('.tetra-dmo-badge');
+        }
+        if (dmoHint) {
+            badge.text('DMO? ' + rate.toFixed(1) + '/s')
+                 .css({ background: '#9c36b5', color: '#fff' })
+                 .show();
+        } else if (rate > 0.3) {
+            badge.text('sync ' + rate.toFixed(1) + '/s')
+                 .css({ background: '#212529', color: '#adb5bd' })
+                 .show();
+        } else {
+            badge.hide();
+        }
+    }
     else if (type === 'burst') {
         // AFC
         if (data.afc !== undefined) {

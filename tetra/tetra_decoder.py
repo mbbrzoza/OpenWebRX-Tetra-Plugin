@@ -1101,7 +1101,7 @@ def main():
             pass
 
     def read_demod_stderr():
-        """Read AFC JSON from demodulator stderr."""
+        """Read JSON events from demodulator stderr: AFC + sync_hit/sync_stat."""
         try:
             for line in demod.stderr:
                 line = line.strip()
@@ -1112,6 +1112,23 @@ def main():
                     if 'afc' in data:
                         with state_lock:
                             afc_value[0] = data['afc']
+                    elif 'sync_stat' in data:
+                        # Forward periodic sync rate to frontend.
+                        # Used by UI to flag "TETRA sync present here" — when
+                        # rate > 0 on a frequency that is NOT a known TMO DL,
+                        # this strongly suggests DMO activity.
+                        stat = data['sync_stat']
+                        write_meta({
+                            'protocol': 'tetra',
+                            'type': 'sync_stat',
+                            'hits_per_s': stat.get('hits_per_s', 0.0),
+                            'window_s': stat.get('window_s', 0.0),
+                        })
+                    elif 'sync_hit' in data:
+                        # Individual sync hits are bursty; keep low overhead
+                        # by relying on sync_stat for UI. Hits forwarded only
+                        # for diag log.
+                        pass
                 except (json.JSONDecodeError, Exception):
                     pass
         except (ValueError, OSError):
