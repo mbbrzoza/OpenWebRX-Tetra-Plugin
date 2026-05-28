@@ -559,6 +559,9 @@ def _diag_record(meta_dict, line):
             pass
 
 
+_encr_state = {"current_la": "", "network_encrypted": False, "active_ts_encr": {}}
+
+
 def emit_meta(meta_dict):
     """Write metadata as JSON line to stderr."""
     try:
@@ -567,6 +570,66 @@ def emit_meta(meta_dict):
             _diag_record(meta_dict, line)
         except Exception:
             pass
+        sys.stderr.write(line)
+        sys.stderr.flush()
+        # Sprawdź czy event ma encrypted aspect → emit "encrypted_activity"
+        try:
+            _maybe_emit_encrypted(meta_dict)
+        except Exception:
+            pass
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def _maybe_emit_encrypted(evt):
+    """Dla każdego eventu, jeśli ma encrypted aspect, wyemituj `encrypted_activity`.
+
+    Bazuje na clear-text PDU headers (jak TTT "Show encrypted call details"):
+    - netinfo (encrypted=True) ustawia network_encrypted flag
+    - call_setup, tx_grant, call_release z enc_control > 0 (TEA1/2/3) — emit
+    - lub gdy network_encrypted == True i call leci po tej sieci — emit
+    Identyfikator SSI/GSSI/timeslot z clear-text addressing fields.
+    """
+    t = evt.get("type")
+    if t == "netinfo":
+        _encr_state["current_la"] = evt.get("la", "")
+        _encr_state["network_encrypted"] = bool(evt.get("encrypted", False))
+        return
+    # Czy event ma encrypted aspect?
+    enc_ctrl = evt.get("enc_control", 0)
+    net_enc = _encr_state["network_encrypted"]
+    has_encr = (enc_ctrl and enc_ctrl > 0) or net_enc
+    if not has_encr:
+        return
+    action_map = {
+        "call_setup": "call_setup",
+        "call_connect": "call_setup",
+        "tx_grant": "tx_grant",
+        "tx_state": "tx_grant",  # może mieć subtype
+        "call_release": "call_release",
+        "resource": "pdu",
+        "sds": "sds",
+    }
+    if t not in action_map:
+        return
+    action = action_map[t]
+    encrypted_event = {
+        "protocol": "TETRA",
+        "type": "encrypted_activity",
+        "action": action,
+        "la": _encr_state["current_la"],
+        "ssi": evt.get("ssi2") or evt.get("calling_ssi") or evt.get("target_ssi") or evt.get("ssi"),
+        "gssi": evt.get("ssi") if evt.get("ssi") and evt.get("ssi2") else "",
+        "tn": evt.get("timeslot"),
+        "call_id": evt.get("call_id"),
+        "enc_mode": "TEA" + str(enc_ctrl) if enc_ctrl else ("network" if net_enc else ""),
+        "source_event": t,
+    }
+    # Brak duplikatów dla GSSI same
+    if encrypted_event["gssi"] == encrypted_event["ssi"]:
+        encrypted_event["gssi"] = ""
+    try:
+        line = json.dumps(encrypted_event) + '\n'
         sys.stderr.write(line)
         sys.stderr.flush()
     except (BrokenPipeError, OSError):

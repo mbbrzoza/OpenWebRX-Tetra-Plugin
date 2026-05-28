@@ -148,11 +148,13 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '      <span class="ttt-tab ttt-tab-msreg" data-tab="msreg" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">MS Rejestracje <span class="ttt-msreg-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-sds" data-tab="sds" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">SDS <span class="ttt-sds-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-dmo" data-tab="dmo" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="DM-MS direct mode signalling z pliku JSON (offline analiza)">DMO <span class="ttt-dmo-count" style="color:#789">(0)</span></span>'+
+        '      <span class="ttt-tab ttt-tab-encr" data-tab="encr" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Encrypted call activity — wnioskowane z clear-text PDU headers (jak TTT)">🔒 Encrypted <span class="ttt-encr-count" style="color:#789">(0)</span></span>'+
         '    </div>'+
         '    <div class="ttt-log" style="font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak zdarzeń</div>'+
         '    <div class="ttt-msreg-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak rejestracji</div>'+
         '    <div class="ttt-sds-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak SDS</div>'+
         '    <div class="ttt-dmo-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4"><div style="color:#789">załaduj <code>dmo_demo.json</code> przyciskiem [Load DMO JSON] (offline DMAC-SYNC PDU)</div><button class="ttt-dmo-load" style="margin-top:6px;background:#1a3050;border:1px solid #234;color:#cde;padding:3px 10px;cursor:pointer;border-radius:2px">Load DMO JSON</button></div>'+
+        '    <div class="ttt-encr-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak encrypted activity</div>'+
         '  </div>'+
         '</div>';
     document.body.appendChild(win);
@@ -171,6 +173,10 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
             self._sdsLog = [];
             win.querySelector('.ttt-sds-list').innerHTML = 'brak SDS';
             win.querySelector('.ttt-sds-count').textContent = '(0)';
+        } else if (tab === 'encr') {
+            self._encryptedLog = [];
+            win.querySelector('.ttt-encr-list').innerHTML = 'brak encrypted activity';
+            win.querySelector('.ttt-encr-count').textContent = '(0)';
         } else {
             self._activityLog = [];
             win.querySelector('.ttt-log').innerHTML = 'brak zdarzeń';
@@ -214,13 +220,20 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         win.querySelector('.ttt-msreg-list').style.display = name === 'msreg' ? 'block' : 'none';
         win.querySelector('.ttt-sds-list').style.display = name === 'sds' ? 'block' : 'none';
         win.querySelector('.ttt-dmo-list').style.display = name === 'dmo' ? 'block' : 'none';
+        win.querySelector('.ttt-encr-list').style.display = name === 'encr' ? 'block' : 'none';
     };
     tabs.forEach(function(t){
         t.addEventListener('click', function(){
-            setActive(t.getAttribute('data-tab'));
-            // Auto-refresh DMO live view when tab opened
-            if (t.getAttribute('data-tab') === 'dmo' && self._dmoLive && self._dmoLive.pdus && self._dmoLive.pdus.length) {
+            var tab = t.getAttribute('data-tab');
+            setActive(tab);
+            if (tab === 'dmo' && self._dmoLive && self._dmoLive.pdus && self._dmoLive.pdus.length) {
                 self._renderDmoLive();
+            }
+            if (tab === 'encr' && self._encryptedLog && self._encryptedLog.length) {
+                var list = win.querySelector('.ttt-encr-list');
+                if (list) list.innerHTML = self._encryptedLog.map(function(l){
+                    return '<div style="padding:1px 2px;border-bottom:1px solid #122">' + l + '</div>';
+                }).join('');
             }
         });
     });
@@ -1177,6 +1190,49 @@ TetraMetaPanel.prototype.update = function(data) {
         if (data.tetra_time) {
             el.find('.tetra-tetra-time').text(this._formatTetraTime(data.tetra_time));
         }
+    }
+    else if (type === 'encrypted_activity') {
+        // Encrypted call activity — wnioskowane z clear-text headers PDU
+        // (jak TTT "Show encrypted call details"). NIE deszyfrujemy nic.
+        if (!this._encryptedLog) this._encryptedLog = [];
+        var ts = this._timestamp();
+        var la = data.la || this._currentLa || '?';
+        var action = data.action || 'encrypted';
+        var ssi = data.ssi || data.target_ssi || '';
+        var gssi = data.gssi || '';
+        var tn = data.tn !== undefined ? ('TS' + data.tn) : '';
+        var enc_mode = data.enc_mode || data.crypt_name || '';
+        var desc = data.description || '';
+        var actLabel = {
+            'call_setup': 'Encrypted CALL SETUP',
+            'tx_grant': 'Encrypted TX granted',
+            'tx_ceased': 'Encrypted TX ceased',
+            'call_release': 'Encrypted call RELEASED',
+            'pdu': 'Encrypted PDU',
+            'sds': 'Encrypted SDS',
+        }[action] || ('Encrypted ' + action);
+        var color = action === 'call_release' ? '#9ab' : (action === 'tx_grant' ? '#ffd43b' : '#ff6b6b');
+        var line = '<span style="color:#789">' + ts + ' [LA: ' + la + ']</span> ' +
+                   '<b style="color:' + color + '">🔒 ' + actLabel + '</b>';
+        if (ssi) line += ' SSI: <b>' + ssi + '</b>';
+        if (gssi) line += ' GSSI: <b>' + gssi + '</b>';
+        if (tn) line += ' ' + tn;
+        if (enc_mode) line += ' (' + enc_mode + ')';
+        if (desc) line += ' — ' + desc;
+        this._encryptedLog.unshift(line);
+        if (this._encryptedLog.length > 500) this._encryptedLog.length = 500;
+        if (this._tttWin) {
+            var cnt = this._tttWin.querySelector('.ttt-encr-count');
+            if (cnt) cnt.textContent = '(' + this._encryptedLog.length + ')';
+            var list = this._tttWin.querySelector('.ttt-encr-list');
+            var encTab = this._tttWin.querySelector('.ttt-tab[data-tab="encr"]');
+            if (list && encTab && encTab.getAttribute('data-active') === '1') {
+                list.innerHTML = this._encryptedLog.map(function(l){
+                    return '<div style="padding:1px 2px;border-bottom:1px solid #122">' + l + '</div>';
+                }).join('');
+            }
+        }
+        return;
     }
     else if (type === 'dmo_burst') {
         // Live DMO burst (DMAC-SYNC / DPRES-SYNC) z tetra_dmo_decoder.py

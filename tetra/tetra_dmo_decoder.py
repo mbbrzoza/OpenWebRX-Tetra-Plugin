@@ -182,7 +182,9 @@ def pack_cdecoder_block(type4_432):
 
 
 def emit_pdu(rec):
-    """Emit sparsowany DMO PDU jako event 'dmo_burst' (forma zgodna z TMO meta events)."""
+    """Emit sparsowany DMO PDU jako event 'dmo_burst' (forma zgodna z TMO meta events).
+    Plus: jeśli PDU ma encrypted aspect (airint_encryption_state > 0), wyemituj
+    dodatkowo 'encrypted_activity' (analogicznie do TMO _maybe_emit_encrypted)."""
     emit("dmo_burst",
          sync_type=rec.get("sync_pdu_type_name"),
          comm=rec.get("communication_type_name"),
@@ -196,6 +198,20 @@ def emit_pdu(rec):
          mcc=rec.get("mcc"),
          mnc=rec.get("mnc"),
          summary=rec.get("summary"))
+    # Encrypted activity
+    enc_state = rec.get("airint_encryption_state", 0)
+    if enc_state and enc_state > 0:
+        mcc = rec.get("mcc")
+        mnc = rec.get("mnc")
+        emit("encrypted_activity",
+             action="pdu",
+             la=(f"{mcc}-{mnc}" if mcc is not None else ""),
+             ssi=rec.get("dest_address"),
+             gssi="",
+             tn=rec.get("slot_number"),
+             enc_mode={1: "TEA", 2: "SCK", 3: "static"}.get(enc_state, f"enc={enc_state}"),
+             source_event="dmac_sync",
+             description=f"DMO DMAC-SYNC msg={rec.get('message_type_name','?')} src={rec.get('src_address')}")
 
 
 # ---------- Threads ----------
