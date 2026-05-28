@@ -560,6 +560,7 @@ def _diag_record(meta_dict, line):
 
 
 _encr_state = {"current_la": "", "network_encrypted": False, "active_ts_encr": {}}
+_encr_traffic_last = {}  # per-slot last emit time dla tch_active rate limit
 
 
 def emit_meta(meta_dict):
@@ -810,6 +811,23 @@ def main():
                                     cat = 'traffic'
                                 ts_usage[tn] = cat
                                 ts_seen[tn] = time.monotonic()
+                                # Encrypted TCH tracking: gdy slot=traffic + network encrypted
+                                # → emit encrypted_activity co 5s (per-slot rate limit)
+                                if cat == 'traffic' and _encr_state.get("network_encrypted"):
+                                    last = _encr_traffic_last.get(tn, 0)
+                                    now_t = time.time()
+                                    if now_t - last >= 5.0:
+                                        _encr_traffic_last[tn] = now_t
+                                        emit_meta({
+                                            "protocol": "TETRA",
+                                            "type": "encrypted_activity",
+                                            "action": "tch_active",
+                                            "la": _encr_state.get("current_la", ""),
+                                            "tn": tn,
+                                            "enc_mode": "network",
+                                            "source_event": "aach_dl_usage_traffic",
+                                            "description": f"NDB1/NDB2 traffic na TS{tn} (network encrypted)",
+                                        })
                                 continue
                             m = re_access_a1.search(line)
                             if m:

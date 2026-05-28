@@ -1210,8 +1210,11 @@ TetraMetaPanel.prototype.update = function(data) {
             'call_release': 'Encrypted call RELEASED',
             'pdu': 'Encrypted PDU',
             'sds': 'Encrypted SDS',
+            'tch_active': 'Encrypted TCH active (NDB1/NDB2)',
         }[action] || ('Encrypted ' + action);
-        var color = action === 'call_release' ? '#9ab' : (action === 'tx_grant' ? '#ffd43b' : '#ff6b6b');
+        var color = action === 'call_release' ? '#9ab' :
+                    action === 'tx_grant' ? '#ffd43b' :
+                    action === 'tch_active' ? '#51cf66' : '#ff6b6b';
         var line = '<span style="color:#789">' + ts + ' [LA: ' + la + ']</span> ' +
                    '<b style="color:' + color + '">🔒 ' + actLabel + '</b>';
         if (ssi) line += ' SSI: <b>' + ssi + '</b>';
