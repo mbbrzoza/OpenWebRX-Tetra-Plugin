@@ -11,3 +11,4 @@ tetra/ttt_analysis/
 # Python caches
 __pycache__/
 *.pyc
+tetra/test_data/
