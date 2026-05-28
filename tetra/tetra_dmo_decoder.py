@@ -43,12 +43,27 @@ AUDIO_FRAME_BYTES = AUDIO_FRAME_SAMPLES * 2
 BIT_BUFFER_MAX = 100_000
 
 
+_LOG_PATH = "/tmp/tetra_dmo_log.json"
+_log_fh = None
+
 def emit(event_type, **kwargs):
-    """JSON event line na stderr (zgodny format z tetra_decoder.py TMO)."""
-    obj = {"type": event_type, "t": time.time(), **kwargs}
+    """JSON event line na stderr (zgodny format z tetra_decoder.py TMO)
+    + duplikat do /tmp/tetra_dmo_log.json dla debug.
+
+    KRYTYCZNE: musi zawierać 'protocol': 'TETRA' bo TetraMetaPanel.isSupported
+    sprawdza data.protocol — bez tego events są drop'owane przez frontend."""
+    obj = {"protocol": "TETRA", "type": event_type, "t": time.time(), **kwargs}
+    line = json.dumps(obj) + "\n"
     try:
-        sys.stderr.write(json.dumps(obj) + "\n")
+        sys.stderr.write(line)
         sys.stderr.flush()
+    except Exception:
+        pass
+    global _log_fh
+    try:
+        if _log_fh is None:
+            _log_fh = open(_LOG_PATH, "a", buffering=1)
+        _log_fh.write(line)
     except Exception:
         pass
 
@@ -203,16 +218,28 @@ def audio_loop(stop_event):
 
 def iq_pump(demod_proc, stop_event):
     """Czyta IQ z naszego stdin i piszę do demod subprocess stdin."""
+    bytes_total = 0
+    last_report = time.time()
     try:
         while not stop_event.is_set():
             data = sys.stdin.buffer.read(8192)
             if not data:
+                emit("warning", source="iq_pump", msg="stdin EOF")
                 break
+            bytes_total += len(data)
             try:
                 demod_proc.stdin.write(data)
                 demod_proc.stdin.flush()
             except (BrokenPipeError, OSError):
+                emit("warning", source="iq_pump", msg="demod stdin broken")
                 break
+            now = time.time()
+            if now - last_report > 10.0:
+                # 8 bytes per complex64 sample, 36k SPS → 288k bytes/s
+                rate = bytes_total / (now - last_report) / 1024
+                emit("iq_rate", kb_per_s=round(rate, 1), total_mb=round(bytes_total/1e6, 2))
+                bytes_total = 0
+                last_report = now
     except Exception as e:
         emit("error", source="iq_pump", msg=str(e)[:200])
     finally:
