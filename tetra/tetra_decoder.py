@@ -585,7 +585,7 @@ def emit_meta(meta_dict):
 def _maybe_emit_encrypted(evt):
     """Dla każdego eventu, jeśli ma encrypted aspect, wyemituj `encrypted_activity`.
 
-    Bazuje na clear-text PDU headers (jak TTT "Show encrypted call details"):
+    Bazuje na clear-text nagłówkach PDU (bez deszyfrowania):
     - netinfo (encrypted=True) ustawia network_encrypted flag
     - call_setup, tx_grant, call_release z enc_control > 0 (TEA1/2/3) — emit
     - lub gdy network_encrypted == True i call leci po tej sieci — emit

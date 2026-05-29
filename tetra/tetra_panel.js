@@ -112,8 +112,8 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         'box-shadow:0 4px 14px rgba(0,0,0,0.6);z-index:10000;font-family:system-ui,sans-serif;font-size:0.9em;display:none';
     win.innerHTML = ''+
         '<div class="ttt-title" style="background:#1a3050;padding:4px 8px;cursor:move;display:flex;justify-content:space-between;align-items:center;border-radius:3px 3px 0 0">'+
-        '  <div><b>TETRA Trunk Tracker</b> <span style="color:#9cf;margin-left:8px" class="ttt-net">—</span></div>'+
-        '  <div>'+
+        '  <div><b>TETRA Monitor</b> <span style="color:#9cf;margin-left:8px" class="ttt-net">—</span></div>'+
+        '  <div style="padding-right:32px">'+
         '    <span class="ttt-sound" style="cursor:pointer;color:#9ab;margin-right:8px" title="Włącz/wyłącz dźwięki">🔊</span>'+
         '    <span class="ttt-labels-btn" style="cursor:pointer;color:#9ab;margin-right:8px" title="Edytor etykiet G/SSI + priority/lockout">[etykiety]</span>'+
         '    <span class="ttt-filters-btn" style="cursor:pointer;color:#9ab;margin-right:8px" title="Filtry zdarzeń">[filtry]</span>'+
@@ -121,9 +121,11 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '    <span class="ttt-export" style="cursor:pointer;color:#9ab;margin-right:8px" title="Eksport CSV aktywnej zakładki">[CSV]</span>'+
         '    <span class="ttt-compact-btn" style="cursor:pointer;color:#9ab;margin-right:8px" title="Compact (F11)">[compact]</span>'+
         '    <span class="ttt-remote-btn" style="cursor:pointer;color:#9ab;margin-right:8px" title="Remote — duży display (F12)">[remote]</span>'+
-        '    <span class="ttt-clear" style="cursor:pointer;color:#9ab;margin-right:10px" title="Wyczyść log">[wyczyść]</span>'+
-        '    <span class="ttt-close" style="cursor:pointer;color:#fcc;font-weight:bold" title="Zamknij">✕</span>'+
+        '    <span class="ttt-clear" style="cursor:pointer;color:#9ab;margin-right:8px" title="Wyczyść log">[wyczyść]</span>'+
         '  </div>'+
+        // Klasyczny przycisk zamknięcia w prawym górnym rogu okna (position:absolute
+        // względem win, który jest position:fixed). Czerwony hover jak w oknie OS.
+        '  <span class="ttt-close" title="Zamknij (Esc)" style="position:absolute;top:0;right:0;width:30px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fcc;font-weight:bold;font-size:1.05em;border-radius:0 3px 0 5px">✕</span>'+
         '</div>'+
         '<div class="ttt-nowplaying" style="background:#021;border-bottom:1px solid #234;padding:3px 10px;font-family:monospace;font-size:0.85em;color:#9ab">NO CALL</div>'+
         '<div style="display:flex">'+
@@ -148,7 +150,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '      <span class="ttt-tab ttt-tab-msreg" data-tab="msreg" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">MS Rejestracje <span class="ttt-msreg-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-sds" data-tab="sds" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">SDS <span class="ttt-sds-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-dmo" data-tab="dmo" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="DM-MS direct mode signalling z pliku JSON (offline analiza)">DMO <span class="ttt-dmo-count" style="color:#789">(0)</span></span>'+
-        '      <span class="ttt-tab ttt-tab-encr" data-tab="encr" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Encrypted call activity — wnioskowane z clear-text PDU headers (jak TTT)">🔒 Encrypted <span class="ttt-encr-count" style="color:#789">(0)</span></span>'+
+        '      <span class="ttt-tab ttt-tab-encr" data-tab="encr" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Encrypted call activity — wnioskowane z clear-text nagłówków PDU (bez deszyfrowania)">🔒 Encrypted <span class="ttt-encr-count" style="color:#789">(0)</span></span>'+
         '    </div>'+
         '    <div class="ttt-log" style="font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak zdarzeń</div>'+
         '    <div class="ttt-msreg-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak rejestracji</div>'+
@@ -161,7 +163,11 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
     this._tttWin = win;
 
     // Close + clear handlers
-    win.querySelector('.ttt-close').addEventListener('click', function(){ win.style.display = 'none'; });
+    var closeBtn = win.querySelector('.ttt-close');
+    closeBtn.addEventListener('click', function(){ win.style.display = 'none'; });
+    // Czerwony hover jak w klasycznym przycisku zamknięcia okna (inline → bez CSS :hover).
+    closeBtn.addEventListener('mouseenter', function(){ closeBtn.style.background = '#e03131'; closeBtn.style.color = '#fff'; });
+    closeBtn.addEventListener('mouseleave', function(){ closeBtn.style.background = ''; closeBtn.style.color = '#fcc'; });
     win.querySelector('.ttt-clear').addEventListener('click', function(){
         var activeTab = win.querySelector('.ttt-tab[data-active="1"]');
         var tab = activeTab ? activeTab.getAttribute('data-tab') : 'activity';
@@ -200,10 +206,11 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
     var refreshSound = function(){ soundBtn.textContent = self._soundsEnabled ? '🔊' : '🔇'; soundBtn.style.color = self._soundsEnabled ? '#cde' : '#666'; };
     refreshSound();
     soundBtn.addEventListener('click', function(){ self._soundsEnabled = !self._soundsEnabled; self._savePrefs(); refreshSound(); });
-    // Keyboard shortcuts F11 (compact) and F12 (remote) when TTT focused
+    // Keyboard shortcuts F11 (compact) and F12 (remote) when monitor focused
     win.addEventListener('keydown', function(e){
         if (e.key === 'F11') { e.preventDefault(); self._toggleCompact(); }
         else if (e.key === 'F12') { e.preventDefault(); self._showRemoteWindow(); }
+        else if (e.key === 'Escape') { e.preventDefault(); win.style.display = 'none'; }
     });
     win.tabIndex = 0;
 
@@ -259,6 +266,8 @@ TetraMetaPanel.prototype._showTttWindow = function() {
     this._ensureTttWindow();
     this._tttWin.style.display = 'block';
     this._renderTttWindow();
+    // Focus, żeby skróty (Esc zamyka, F11/F12) działały od razu bez klikania w okno.
+    try { this._tttWin.focus(); } catch (e) {}
 };
 
 TetraMetaPanel.prototype._renderTttWindow = function() {
@@ -1204,7 +1213,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'encrypted_activity') {
         // Encrypted call activity — wnioskowane z clear-text headers PDU
-        // (jak TTT "Show encrypted call details"). NIE deszyfrujemy nic.
+        // Wnioskowane z clear-text nagłówków PDU. NIE deszyfrujemy nic.
         if (!this._encryptedLog) this._encryptedLog = [];
         var ts = this._timestamp();
         var la = data.la || this._currentLa || '?';
@@ -1315,7 +1324,7 @@ TetraMetaPanel.prototype.update = function(data) {
         var issi = data.ssi2 || data.calling_ssi || '---';
         el.find('.tetra-issi').text(issi);
         el.find('.tetra-call-id').text('CID:' + (data.call_id || ''));
-        // Update floating TTT window state
+        // Update floating monitor window state
         if (!this._currentCall || this._currentCall.call_id !== data.call_id) {
             this._currentCall = {
                 call_id: data.call_id, gssi: data.ssi, issis: new Set(),
