@@ -377,8 +377,11 @@ NCI_PATTERN = re.compile(
 )
 # D_NWRK_BROADCAST:[ cell_reselect:0xXXXX cell_load:N
 NWRK_PATTERN = re.compile(r'D_NWRK_BROADCAST:\[\s*cell_reselect:0x([0-9a-fA-F]+)\s+cell_load:(\d+)')
-# time[secs:N offset:±Nmin year:N
-TETRA_TIME_PATTERN = re.compile(r'time\[secs:(\d+)\s+offset:([+-])(\d+)min\s+year:(\d+)')
+# time[secs:N offset:±Nmin year:N reserved:0xXXXX]
+# NB: binarka drukuje "secs" = surowe 24-bit UTC, ale wg ETSI EN 300 392-2 §18.5.24
+# każdy increment = 2 sekundy, liczone od 00:00 UTC 1 stycznia danego roku.
+TETRA_TIME_PATTERN = re.compile(
+    r'time\[secs:(\d+)\s+offset:([+-])(\d+)min\s+year:(\d+)\s+reserved:0x([0-9a-fA-F]+)\]')
 # BNCH SYSINFO (DL N Hz, UL N Hz), service_details 0xXXXX [optional LA:N] [CCK ID N | Hyperframe N]
 BNCH_PATTERN = re.compile(
     r'BNCH SYSINFO \(DL\s+(\d+)\s+Hz,\s+UL\s+(\d+)\s+Hz\),\s+'
@@ -862,16 +865,30 @@ def main():
                                 network_state["cell_load"] = int(nm.group(2))
                         tm = TETRA_TIME_PATTERN.search(line)
                         if tm:
-                            off = int(tm.group(3))
+                            utc_raw = int(tm.group(1))        # 24-bit, 2-sekundowe inkrementy
+                            off = int(tm.group(3))            # binarka już ×15 (minuty)
                             if tm.group(2) == '-':
                                 off = -off
+                            year_full = int(tm.group(4))      # binarka już 2000+raw
+                            reserved = int(tm.group(5), 16)
+                            year_raw = year_full - 2000
+                            # Walidacja wg ETSI EN 300 392-2 §18.5.24 — odrzuca "bzdurny"
+                            # czas (markery invalid / network malfunction), żeby nie pokazywać śmieci:
+                            #   UTC: 0xFFFFFF = invalid, 0xF142FF..0xFFFFFE = reserved
+                            #   offset: 0x3F (=945 min) = invalid, max ±14h
+                            #   year:  0x3F = invalid (raw 0..0x3E)
+                            #   reserved: musi być 0x7FF
+                            valid = (reserved == 0x7ff
+                                     and utc_raw < 0xF142FF
+                                     and abs(off) <= 14 * 60
+                                     and 0 <= year_raw <= 0x3E)
                             with state_lock:
                                 network_state["tetra_time"] = {
-                                    "secs": int(tm.group(1)),
+                                    # secs = realne sekundy od 00:00 UTC 1 stycznia year_full
+                                    "secs": utc_raw * 2,
                                     "offset_min": off,
-                                    # tetra-rx already prints 2000+year, don't add again
-                                    "year": int(tm.group(4)),
-                                }
+                                    "year": year_full,
+                                } if valid else None
                         # NCI entries embedded in the same line (one D_NWRK_BROADCAST → 0..N NCI)
                         now_mono = time.monotonic()
                         for nci in NCI_PATTERN.finditer(line):

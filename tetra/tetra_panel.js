@@ -74,16 +74,18 @@ TetraMetaPanel.prototype._timestamp = function() {
 };
 
 TetraMetaPanel.prototype._formatTetraTime = function(tt) {
-    if (!tt) return '---';
-    var secs = tt.secs || 0;
+    // tt.secs = realne sekundy od 00:00 UTC 1 stycznia tt.year (backend zwalidował i ×2
+    // wg ETSI EN 300 392-2 §18.5.24). Backend zwraca null gdy czas niepoprawny.
+    if (!tt || tt.secs == null || !tt.year) return '---';
     var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
-    var hh = Math.floor((secs % 86400) / 3600);
-    var mm = Math.floor((secs % 3600) / 60);
-    var ss = secs % 60;
-    var day = Math.floor(secs / 86400);
     var off = tt.offset_min || 0;
-    var offStr = 'UTC' + (off >= 0 ? '+' : '') + (off / 60).toFixed(off % 60 ? 2 : 0);
-    return pad(hh) + ':' + pad(mm) + ':' + pad(ss) + ' (d' + day + ', ' + offStr + ', rok ' + (tt.year || '?') + ')';
+    // Czas lokalny sieci = UTC + offset; przesuwamy epokę i czytamy pola jako UTC.
+    var local = new Date(Date.UTC(tt.year, 0, 1) + (tt.secs + off * 60) * 1000);
+    var dateStr = local.getUTCFullYear() + '-' + pad(local.getUTCMonth() + 1) + '-' + pad(local.getUTCDate());
+    var timeStr = pad(local.getUTCHours()) + ':' + pad(local.getUTCMinutes()) + ':' + pad(local.getUTCSeconds());
+    var a = Math.abs(off);
+    var offStr = 'UTC' + (off >= 0 ? '+' : '-') + Math.floor(a / 60) + (a % 60 ? ':' + pad(a % 60) : '');
+    return dateStr + ' ' + timeStr + ' (' + offStr + ')';
 };
 
 TetraMetaPanel.prototype._logActivity = function(html, color) {
