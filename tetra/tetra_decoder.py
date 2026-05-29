@@ -1011,20 +1011,32 @@ def main():
                                 "attach_type": int(am.group(3)),
                             })
 
-                    # D-AUTHENTICATION-DEMAND / D-AUTHENTICATION-RESULT (TETRA EN 300 392-7)
+                    # D-AUTHENTICATION (TETRA EN 300 392-7). Binarka osmo-tetra-tla
+                    # (= wdrożona tetra-rx) emituje sub-typ WPROST po nazwie PDU, np.
+                    # "D-AUTHENTICATION Demand RAND1=... RA=..." / "D-AUTHENTICATION Result DATA=...".
+                    # Sub-typy z auth_sub_names: Demand/Response/Result/Reject (mieszana wielkość
+                    # liter). Poprzedni warunek na all-caps 'RESULT' NIGDY nie matchował tej
+                    # binarki — stąd martwa akcja authentication_result. SSI tylko jeśli binarka
+                    # je drukuje (na razie nie dla auth — patrz patch tms->ssi); inaczej None.
                     if 'D-AUTHENTICATION' in line:
-                        lstripped = line.lstrip()[:40]
                         ssi_m = re.search(r'\b(?:SSI|ISSI):(\d+)', line)
                         ssi_val = int(ssi_m.group(1)) if ssi_m else None
-                        if 'D-AUTHENTICATION RESULT' in lstripped or 'D-AUTH-RESULT' in lstripped:
-                            # tetra-rx may print result code; default to "success"
-                            res_m = re.search(r'result[:\s=]+([A-Za-z _]+)', line, re.I)
-                            res = res_m.group(1).strip() if res_m else 'Authentication successful or no authentication currently in progress'
+                        # Po patchu tetra_mle.c między nazwą a sub-typem jest "SSI:N " — opcjonalne.
+                        sub_m = re.search(r'D-AUTHENTICATION(?:\s+SSI:\d+)?\s+(Demand|Response|Result|Reject)', line, re.I)
+                        sub = sub_m.group(1).lower() if sub_m else 'demand'
+                        if sub == 'result':
                             _emit_ms({
                                 "protocol": "TETRA", "type": "ms_register",
-                                "action": "authentication_result", "ssi": ssi_val, "auth_result": res,
+                                "action": "authentication_result", "ssi": ssi_val,
+                                "auth_result": "Authentication successful or no authentication currently in progress",
                             })
-                        elif 'D-AUTH' in lstripped:
+                        elif sub == 'reject':
+                            _emit_ms({
+                                "protocol": "TETRA", "type": "ms_register",
+                                "action": "authentication_result", "ssi": ssi_val,
+                                "auth_result": "Authentication rejected",
+                            })
+                        else:  # demand / response
                             _emit_ms({
                                 "protocol": "TETRA", "type": "ms_register",
                                 "action": "authentication_demand", "ssi": ssi_val,
