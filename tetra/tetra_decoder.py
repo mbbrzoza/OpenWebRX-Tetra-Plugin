@@ -750,22 +750,21 @@ def main():
     re_hookmethod = re.compile(r'[Hh]ook(?:method|_method)?:(\d+)')
 
     def decode_call_type(basicinfo_byte):
-        """Decode TETRA Basic Service Information byte to call type string."""
-        # Bits 7-5: circuit mode type
-        cmt = (basicinfo_byte >> 5) & 0x07
-        # Bit 4: encryption
-        # Bits 3-0: communication type
-        comm = basicinfo_byte & 0x0F
-        types = {0: "individual", 1: "group", 2: "broadcast",
-                 3: "acknowledged group"}
-        cmt_str = types.get(cmt, "other")
-        if comm == 1:
-            cmt_str += " TEA1"
-        elif comm == 2:
-            cmt_str += " TEA2"
-        elif comm == 3:
-            cmt_str += " TEA3"
-        return cmt_str
+        """Decode TETRA 'Basic service information' byte (D-SETUP) → call type.
+
+        ETSI EN 300 392-2 Table 14.35 sub-element order (MSB first):
+          bits 7-5 = circuit mode type (speech/data), bit 4 = encryption flag,
+          bits 3-2 = COMMUNICATION TYPE, bits 1-0 = slots-per-frame/speech service.
+        Communication type (Table 14.54): 0=point-to-point (individual),
+        1=point-to-multipoint (group), 2=p2mp acknowledged, 3=broadcast.
+
+        Poprzednia wersja czytała bity 7-5 (typ kanału mowa/dane) jako typ
+        połączenia → wszystkie połączenia grupowe pokazywały się jako [Indyw.].
+        """
+        comm_type = (basicinfo_byte >> 2) & 0x03
+        types = {0: "individual", 1: "group",
+                 2: "acknowledged group", 3: "broadcast"}
+        return types.get(comm_type, "other")
 
     def parse_tetra_rx_stdout():
         """Read tetra-rx stdout and extract timeslot/call info."""
