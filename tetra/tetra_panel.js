@@ -431,6 +431,10 @@ TetraMetaPanel.prototype._switchFreq = function(newKey) {
     }
     this._currentCall = null;
     this._currentTimeslot = null;
+    this._stopDurationTimer();
+    // Wyzeruj pola sygnalizacji poprzedniego carriera — netinfo, które właśnie
+    // wywołało _switchFreq, zaraz nadpisze te, które nowa komórka nadaje.
+    this._resetLiveFields();
     var el = $(this.el);
     el.find('.tetra-activity-list').html(this._activityLog.join(''));
     el.find('.tetra-activity-count').text(this._activityLog.length);
@@ -1627,14 +1631,21 @@ TetraMetaPanel.prototype.update = function(data) {
     }
 };
 
-TetraMetaPanel.prototype.clear = function() {
-    MetaPanel.prototype.clear.call(this);
+// Blank wszystkich pól sygnalizacji (bez logów). Wspólne dla clear() i _switchFreq(),
+// żeby przy przełączaniu carriera stare dane (czas TETRA, sąsiedzi, AFC, ISSI/GSSI,
+// status połączenia...) nie zostawały na ekranie dopóki nowa komórka nie nadpisze
+// danego pola. Pola, których nowa komórka nie emituje (np. czas), zostają wyzerowane.
+TetraMetaPanel.prototype._resetLiveFields = function() {
     var el = $(this.el);
     el.find('.tetra-network, .tetra-mcc, .tetra-mnc').text('---');
     el.find('.tetra-dl-freq, .tetra-ul-freq, .tetra-carrier').text('---');
     el.find('.tetra-color-code, .tetra-la').text('---');
     el.find('.tetra-encrypted').text('---').css('color', '');
     el.find('.tetra-afc, .tetra-burst-rate').text('---').css('color', '');
+    el.find('.tetra-tetra-time').text('---');
+    el.find('.tetra-issi, .tetra-gssi').text('---');
+    el.find('.tetra-call-status').text('—').css('color', '');
+    el.find('.tetra-call-type, .tetra-call-id').text('');
     el.find('.tetra-ts').removeClass('busy idle').each(function(i){
         var n = i + 1;
         $(this).html(n + '<sub style="font-size:0.75em;opacity:0.85;margin-left:2px">?</sub>')
@@ -1643,6 +1654,12 @@ TetraMetaPanel.prototype.clear = function() {
     });
     el.find('.tetra-neighbour-count').text('0');
     el.find('.tetra-neighbour-list').text('');
+};
+
+TetraMetaPanel.prototype.clear = function() {
+    MetaPanel.prototype.clear.call(this);
+    var el = $(this.el);
+    this._resetLiveFields();
     this._activityLog = [];
     this._msRegLog = [];
     this._sdsLog = [];
