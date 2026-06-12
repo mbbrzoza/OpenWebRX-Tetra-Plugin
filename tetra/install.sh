@@ -344,30 +344,47 @@ if [[ "$MODE" == "install" ]]; then
     fi
 
     # ── Step 4: Build ETSI ACELP codec ──
+    # The sq5bpf fork ships only the patches (codec.diff), not the
+    # osmocom download_and_patch.sh helper, so download + patch + build
+    # is done here. The codec source itself is not redistributable and
+    # must be fetched from etsi.org (free download, ~360 kB).
     log "Step 4/8: Building ETSI ACELP codec..."
     CODEC_DIR="$OSMO_TETRA_SRC/etsi_codec-patches"
-    if [[ -d "$CODEC_DIR" && -f "$CODEC_DIR/download_and_patch.sh" ]]; then
+    ETSI_ZIP_URL="https://www.etsi.org/deliver/etsi_en/300300_300399/30039502/01.03.01_60/en_30039502v010301p0.zip"
+    ETSI_ZIP_MD5="a8115fe68ef8f8cc466f4192572a1e3e"
+    if [[ -f "$INSTALL_DIR/cdecoder" && -f "$INSTALL_DIR/sdecoder" ]]; then
+        log "ACELP codec already installed"
+    elif [[ -f "$CODEC_DIR/codec.diff" ]]; then
         cd "$CODEC_DIR"
-        if [[ ! -f "$INSTALL_DIR/cdecoder" ]]; then
-            log "Running ETSI codec download and build..."
-            bash download_and_patch.sh 2>&1 | tail -10
-            if [[ -d codec ]]; then
-                cd codec
-                make 2>&1 | tail -5
-                cp cdecoder sdecoder "$INSTALL_DIR/" 2>/dev/null || true
-                cd "$CODEC_DIR"
-            fi
-            if [[ -f "$INSTALL_DIR/cdecoder" && -f "$INSTALL_DIR/sdecoder" ]]; then
-                log "ACELP codec built successfully"
-            else
-                warn "ACELP codec build failed - audio decoding will not work"
-                warn "See: $CODEC_DIR/README"
-            fi
+        if [[ ! -f etsi_tetra_codec.zip ]]; then
+            log "Downloading ETSI reference codec (EN 300 395-2)..."
+            # etsi.org returns 403 to the default wget agent
+            wget -q -U "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/122.0" \
+                -O etsi_tetra_codec.zip "$ETSI_ZIP_URL" || rm -f etsi_tetra_codec.zip
+        fi
+        if [[ -f etsi_tetra_codec.zip ]] && \
+           [[ "$(md5sum etsi_tetra_codec.zip | awk '{print $1}')" == "$ETSI_ZIP_MD5" ]]; then
+            rm -rf codec && mkdir codec && cd codec
+            unzip -qq -L ../etsi_tetra_codec.zip
+            # codec.diff includes all other patches (see README_sq5bpf)
+            patch -p1 --batch < ../codec.diff
+            cd c-code
+            make 2>&1 | tail -5
+            cp cdecoder sdecoder "$INSTALL_DIR/" 2>/dev/null || true
         else
-            log "ACELP codec already installed"
+            rm -f etsi_tetra_codec.zip
+            warn "Could not download ETSI codec from etsi.org"
+        fi
+        if [[ -f "$INSTALL_DIR/cdecoder" && -f "$INSTALL_DIR/sdecoder" ]]; then
+            log "ACELP codec built successfully"
+        else
+            warn "ACELP codec build failed - audio decoding will not work"
+            warn "Manual fix: download $ETSI_ZIP_URL"
+            warn "then: unzip -L into $CODEC_DIR/codec, patch -p1 < codec.diff,"
+            warn "make in codec/c-code, copy cdecoder+sdecoder to $INSTALL_DIR/"
         fi
     else
-        warn "ETSI codec patches not found"
+        warn "ETSI codec patches not found (osmo-tetra clone incomplete?)"
         warn "Copy cdecoder and sdecoder to $INSTALL_DIR/ manually"
     fi
 else
