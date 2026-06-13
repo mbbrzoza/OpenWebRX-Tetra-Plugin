@@ -182,6 +182,8 @@ if [[ "$MODE" == "uninstall" ]]; then
     rm -f "$OWRX_PYTHON/csdr/chain/tetra.py"
     rm -f "$OWRX_PYTHON/csdr/module/tetra_dmo.py"
     rm -f "$OWRX_PYTHON/csdr/chain/tetra_dmo.py"
+    rm -f "$OWRX_PYTHON/csdr/module/lora.py"
+    rm -f "$OWRX_PYTHON/csdr/chain/lora.py"
     log "Removed CSDR modules"
 
     # Restore backed-up OpenWebRX+ files
@@ -419,6 +421,16 @@ cp "$SCRIPT_DIR/csdr_chain_tetra.py" "$OWRX_PYTHON/csdr/chain/tetra.py"
 cp "$SCRIPT_DIR/csdr_module_tetra_dmo.py" "$OWRX_PYTHON/csdr/module/tetra_dmo.py"
 cp "$SCRIPT_DIR/csdr_chain_tetra_dmo.py" "$OWRX_PYTHON/csdr/chain/tetra_dmo.py"
 log "Installed csdr/module/tetra{,_dmo}.py and csdr/chain/tetra{,_dmo}.py"
+
+# ── Install LoRa-APRS (tryb 'lora') ──
+if [[ -f "$SCRIPT_DIR/lora_decoder.py" ]]; then
+    cp "$SCRIPT_DIR/lora_decoder.py" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/lora_decoder.py"
+    cp "$SCRIPT_DIR/csdr_module_lora.py" "$OWRX_PYTHON/csdr/module/lora.py"
+    cp "$SCRIPT_DIR/csdr_chain_lora.py" "$OWRX_PYTHON/csdr/chain/lora.py"
+    python3 "$SCRIPT_DIR/patch_lora.py" "$OWRX_PYTHON" || warn "  LoRa-APRS patch issues (see above)"
+    log "Installed LoRa-APRS (mode 'lora'): lora_decoder.py + csdr lora module/chain + patches"
+fi
 
 # ── Patch OpenWebRX+ (modes.py, feature.py, dsp.py) ──
 STEP=$((STEP_BASE + 2))
