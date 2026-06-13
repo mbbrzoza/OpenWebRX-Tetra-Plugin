@@ -38,6 +38,13 @@ function TetraMetaPanel(el) {
     this._terminalDb = {}; // ssi -> aggregated terminal info
     this._hourHist = new Array(24).fill(0); // hour-of-day histogram of interesting events (heatmapa)
     this._statsSort = 'airtime'; // sortowanie tabeli statystyk: airtime|tx|calls|last
+    this._recEnabled = false;  // nagrywanie rozmów do WAV (opt-in, persist w prefs)
+    this._recordings = [];     // {name, blob, url, durationSec, callId, ssi, gssi, at, size}
+    this._recActive = null;    // bieżące nagranie {chunks, frames, ...}
+    this._recTap = null;       // ScriptProcessorNode podpięty pod audioEngine
+    this._recTapRate = 0;      // sample rate tapa
+    this._REC_MAX = 20;        // ile nagrań trzymać (bloby w pamięci przeglądarki)
+    this._REC_MAX_SEC = 300;   // twardy limit długości jednego nagrania
     this._filters = {};    // event-kind -> bool (default true if missing)
     this._remoteWin = null;
     this._compact = false;
@@ -157,6 +164,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '      <span class="ttt-tab ttt-tab-dmo" data-tab="dmo" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="DM-MS direct mode signalling z pliku JSON (offline analiza)">DMO <span class="ttt-dmo-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-encr" data-tab="encr" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Encrypted call activity — wnioskowane z clear-text nagłówków PDU (bez deszyfrowania)">🔒 Encrypted <span class="ttt-encr-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-stats" data-tab="stats" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Statystyki: ranking SSI wg airtime/TX + heatmapa godzinowa">📊 Statystyki</span>'+
+        '      <span class="ttt-tab ttt-tab-rec" data-tab="rec" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Nagrywanie rozmów do WAV (po stronie przeglądarki) + pobieranie">🎙 Nagrania <span class="ttt-rec-count" style="color:#789">(0)</span></span>'+
         '    </div>'+
         '    <div class="ttt-log" style="font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak zdarzeń</div>'+
         '    <div class="ttt-msreg-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak rejestracji</div>'+
@@ -164,6 +172,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '    <div class="ttt-dmo-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4"><div style="color:#789">załaduj <code>dmo_demo.json</code> przyciskiem [Load DMO JSON] (offline DMAC-SYNC PDU)</div><button class="ttt-dmo-load" style="margin-top:6px;background:#1a3050;border:1px solid #234;color:#cde;padding:3px 10px;cursor:pointer;border-radius:2px">Load DMO JSON</button></div>'+
         '    <div class="ttt-encr-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak encrypted activity</div>'+
         '    <div class="ttt-stats-list" style="display:none;font-size:0.82em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:6px;border-radius:2px">statystyki</div>'+
+        '    <div class="ttt-rec-list" style="display:none;font-size:0.82em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:6px;border-radius:2px">nagrania</div>'+
         '  </div>'+
         '</div>';
     document.body.appendChild(win);
@@ -244,6 +253,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         win.querySelector('.ttt-dmo-list').style.display = name === 'dmo' ? 'block' : 'none';
         win.querySelector('.ttt-encr-list').style.display = name === 'encr' ? 'block' : 'none';
         win.querySelector('.ttt-stats-list').style.display = name === 'stats' ? 'block' : 'none';
+        win.querySelector('.ttt-rec-list').style.display = name === 'rec' ? 'block' : 'none';
     };
     tabs.forEach(function(t){
         t.addEventListener('click', function(){
@@ -259,6 +269,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
                 }).join('');
             }
             if (tab === 'stats') self._renderStats();
+            if (tab === 'rec') self._renderRecordings();
         });
     });
     setActive('activity');
@@ -352,6 +363,11 @@ TetraMetaPanel.prototype._renderTttWindow = function() {
     // Live-odświeżanie statystyk tylko gdy zakładka aktywna (uniknięcie zbędnej pracy).
     var statsTab = w.querySelector('.ttt-tab-stats');
     if (statsTab && statsTab.getAttribute('data-active') === '1') this._renderStats();
+    // Licznik nagrań zawsze; pełna lista tylko gdy zakładka aktywna.
+    var recBadge = w.querySelector('.ttt-rec-count');
+    if (recBadge) recBadge.textContent = '(' + this._recordings.length + ')';
+    var recTab = w.querySelector('.ttt-tab-rec');
+    if (recTab && recTab.getAttribute('data-active') === '1') this._renderRecordings();
     this._renderRemote();
 };
 
@@ -503,6 +519,7 @@ TetraMetaPanel.prototype._loadPrefs = function() {
             var d = JSON.parse(raw);
             if (typeof d.sounds === 'boolean') this._soundsEnabled = d.sounds;
             if (typeof d.gssiHold === 'string') this._gssiHold = d.gssiHold;
+            if (typeof d.recEnabled === 'boolean') this._recEnabled = d.recEnabled;
             this._priorities = d.priorities || {};
             this._lockouts = d.lockouts || {};
             this._filters = d.filters || {};
@@ -514,6 +531,7 @@ TetraMetaPanel.prototype._savePrefs = function() {
     try { localStorage.setItem(this._PREFS_KEY, JSON.stringify({
         sounds: this._soundsEnabled,
         gssiHold: this._gssiHold,
+        recEnabled: this._recEnabled,
         priorities: this._priorities,
         lockouts: this._lockouts,
         filters: this._filters
@@ -944,6 +962,181 @@ TetraMetaPanel.prototype._renderStats = function() {
         thEl.addEventListener('click', function(){
             self._statsSort = thEl.getAttribute('data-sort');
             self._renderStats();
+        });
+    });
+};
+
+// ── Nagrywanie rozmów do WAV (po stronie przeglądarki) ──
+// Niezależny tap na grafie Web Audio OWRX (audioEngine.audioNode → ScriptProcessor →
+// cicha gałąź → destination). NIE rusza odtwarzania ani stanu przycisku REC OWRX.
+// Segmentowane po zdarzeniach połączenia; bloby WAV trzymane w pamięci (cap _REC_MAX).
+TetraMetaPanel.prototype._recEnsureTap = function() {
+    if (this._recTap) return true;
+    try {
+        if (typeof audioEngine === 'undefined' || !audioEngine ||
+            !audioEngine.isStarted || !audioEngine.isStarted()) return false;
+        var ctx = audioEngine.audioContext;
+        var src = audioEngine.audioNode || audioEngine.gainNode;
+        if (!ctx || !src || !ctx.createScriptProcessor) return false;
+        var sp = ctx.createScriptProcessor(4096, 1, 1);
+        var self = this;
+        sp.onaudioprocess = function(e) {
+            if (!self._recActive) return;
+            self._recCapture(e.inputBuffer.getChannelData(0));
+        };
+        var silent = ctx.createGain();
+        silent.gain.value = 0;            // gałąź cicha — tylko po to, by sp przetwarzał
+        src.connect(sp); sp.connect(silent); silent.connect(ctx.destination);
+        this._recTapRate = ctx.sampleRate || (audioEngine.getSampleRate ? audioEngine.getSampleRate() : 48000);
+        this._recTap = sp;
+        return true;
+    } catch (e) { return false; }
+};
+
+TetraMetaPanel.prototype._recCapture = function(float32) {
+    var r = this._recActive;
+    if (!r) return;
+    r.chunks.push(new Float32Array(float32));   // kopia — bufor jest reużywany
+    r.frames += float32.length;
+    if (r.frames / r.sampleRate > this._REC_MAX_SEC) this._recStop();
+};
+
+TetraMetaPanel.prototype._recStart = function(callId, ssi, gssi) {
+    if (!this._recEnabled) return;
+    if (!this._recEnsureTap()) return;       // brak audioEngine/ctx → cicho pomiń
+    if (this._recActive && this._recActive.callId === callId) return;  // już nagrywam tę rozmowę
+    this._recStop();                          // domknij poprzednie
+    this._recActive = {
+        chunks: [], frames: 0, started: Date.now(),
+        callId: (callId != null ? callId : null), ssi: ssi || null, gssi: gssi || null,
+        sampleRate: this._recTapRate || 48000,
+    };
+};
+
+TetraMetaPanel.prototype._recStop = function() {
+    var r = this._recActive;
+    this._recActive = null;
+    if (!r || !r.frames) return;
+    var durationSec = r.frames / r.sampleRate;
+    if (durationSec < 0.4) return;            // pomiń mikro-fragmenty
+    var blob = this._encodeWav(r.chunks, r.frames, r.sampleRate);
+    var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+    var d = new Date(r.started);
+    var stamp = d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) + '-' +
+                pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    var name = 'TETRA_' + stamp +
+        (r.callId != null ? '_cid' + r.callId : '') +
+        (r.ssi ? '_ssi' + r.ssi : '') + '.wav';
+    var rec = {
+        name: name, blob: blob, url: URL.createObjectURL(blob), durationSec: durationSec,
+        callId: r.callId, ssi: r.ssi, gssi: r.gssi, at: r.started, size: blob.size,
+    };
+    this._recordings.unshift(rec);
+    while (this._recordings.length > this._REC_MAX) {
+        var old = this._recordings.pop();
+        try { URL.revokeObjectURL(old.url); } catch (e) {}
+    }
+    this._renderRecordings();
+};
+
+// Float32 chunks → 16-bit PCM mono WAV (Blob).
+TetraMetaPanel.prototype._encodeWav = function(chunks, totalFrames, sampleRate) {
+    var pcm = new Int16Array(totalFrames);
+    var o = 0;
+    for (var c = 0; c < chunks.length; c++) {
+        var ch = chunks[c];
+        for (var i = 0; i < ch.length; i++) {
+            var s = ch[i] < -1 ? -1 : (ch[i] > 1 ? 1 : ch[i]);
+            pcm[o++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+    }
+    var dataBytes = pcm.length * 2;
+    var buf = new ArrayBuffer(44 + dataBytes);
+    var dv = new DataView(buf);
+    var ws = function(off, str){ for (var k = 0; k < str.length; k++) dv.setUint8(off + k, str.charCodeAt(k)); };
+    ws(0, 'RIFF'); dv.setUint32(4, 36 + dataBytes, true); ws(8, 'WAVE');
+    ws(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sampleRate, true); dv.setUint32(28, sampleRate * 2, true);
+    dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    ws(36, 'data'); dv.setUint32(40, dataBytes, true);
+    var off = 44;
+    for (var j = 0; j < pcm.length; j++) { dv.setInt16(off, pcm[j], true); off += 2; }
+    return new Blob([buf], { type: 'audio/wav' });
+};
+
+TetraMetaPanel.prototype._fmtBytes = function(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+};
+
+TetraMetaPanel.prototype._renderRecordings = function() {
+    if (!this._tttWin) return;
+    var listEl = this._tttWin.querySelector('.ttt-rec-list');
+    if (!listEl) return;
+    var self = this;
+    var tabBadge = this._tttWin.querySelector('.ttt-rec-count');
+    if (tabBadge) tabBadge.textContent = '(' + this._recordings.length + ')';
+
+    var armed = this._recActive ? ' · 🔴 nagrywam…' : '';
+    var head =
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #234">' +
+        '<label style="cursor:pointer;color:#cde"><input type="checkbox" class="ttt-rec-toggle"' +
+        (this._recEnabled ? ' checked' : '') + '> Nagrywaj rozmowy</label>' +
+        '<span style="color:#789;font-size:0.85em">WAV per rozmowa, max ' + this._REC_MAX +
+        ' w pamięci' + armed + '</span>' +
+        (this._recordings.length ? '<span class="ttt-rec-clear" style="margin-left:auto;cursor:pointer;color:#9ab">[wyczyść]</span>' : '') +
+        '</div>';
+
+    var body;
+    if (!this._recEnabled && !this._recordings.length) {
+        body = '<div style="color:#789;padding:6px">Zaznacz „Nagrywaj rozmowy", aby zapisywać audio każdej rozmowy do pliku WAV (pobieranie poniżej). ' +
+               'Nagrania trzymane są w pamięci przeglądarki — znikają po odświeżeniu strony.</div>';
+    } else if (!this._recordings.length) {
+        body = '<div style="color:#789;padding:6px">Brak nagrań — czekam na rozmowę.</div>';
+    } else {
+        body = this._recordings.map(function(r, i){
+            var fmtT = function(ts){ var d = new Date(ts), p = function(n){ return n<10?'0'+n:''+n; };
+                return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); };
+            var meta = fmtT(r.at) + ' · ' + r.durationSec.toFixed(1) + 's · ' + self._fmtBytes(r.size) +
+                (r.callId != null ? ' · cid ' + r.callId : '') +
+                (r.ssi ? ' · SSI ' + r.ssi : '') + (r.gssi ? ' · GSSI ' + r.gssi : '');
+            return '<div style="display:flex;align-items:center;gap:8px;padding:3px 2px;border-bottom:1px solid #122">' +
+                '<a href="' + r.url + '" download="' + r.name + '" style="color:#51cf66;text-decoration:none" title="Pobierz WAV">⬇</a>' +
+                '<span class="ttt-rec-play" data-idx="' + i + '" style="cursor:pointer;color:#9cf" title="Odtwórz">▶</span>' +
+                '<span style="color:#cde;flex:1;font-family:monospace;font-size:0.92em">' + meta + '</span>' +
+                '<span class="ttt-rec-del" data-idx="' + i + '" style="cursor:pointer;color:#c66" title="Usuń">✕</span>' +
+                '</div>';
+        }).join('');
+    }
+    listEl.innerHTML = head + body;
+
+    var toggle = listEl.querySelector('.ttt-rec-toggle');
+    if (toggle) toggle.addEventListener('change', function(){
+        self._recEnabled = toggle.checked;
+        self._savePrefs();
+        if (self._recEnabled) self._recEnsureTap();
+        else self._recStop();
+        self._renderRecordings();
+    });
+    var clr = listEl.querySelector('.ttt-rec-clear');
+    if (clr) clr.addEventListener('click', function(){
+        self._recordings.forEach(function(r){ try { URL.revokeObjectURL(r.url); } catch(e){} });
+        self._recordings = [];
+        self._renderRecordings();
+    });
+    listEl.querySelectorAll('.ttt-rec-del').forEach(function(el){
+        el.addEventListener('click', function(){
+            var idx = parseInt(el.getAttribute('data-idx'), 10);
+            var r = self._recordings[idx];
+            if (r) { try { URL.revokeObjectURL(r.url); } catch(e){} self._recordings.splice(idx, 1); self._renderRecordings(); }
+        });
+    });
+    listEl.querySelectorAll('.ttt-rec-play').forEach(function(el){
+        el.addEventListener('click', function(){
+            var idx = parseInt(el.getAttribute('data-idx'), 10);
+            var r = self._recordings[idx];
+            if (r) { try { new Audio(r.url).play(); } catch(e){} }
         });
     });
 };
@@ -1393,6 +1586,7 @@ TetraMetaPanel.prototype.update = function(data) {
         this._terminalDb = {};
         this._hourHist = new Array(24).fill(0);
         this._currentCall = null;
+        this._recStop();   // domknij ewentualne nagranie przy zmianie sieci
         this._stopDurationTimer();
         var $el = $(this.el);
         this._logActivity('<i>--- session reset (' + (data.old_network||'?') + ' → ' + (data.new_network||'?') + ') ---</i>', '#9ab');
@@ -1539,6 +1733,7 @@ TetraMetaPanel.prototype.update = function(data) {
     else if (type === 'call_setup') {
         // Lockout / Hold gating
         if (this._isLockedOut(data.ssi) || this._isHoldFiltered(data.ssi)) return;
+        this._recStart(data.call_id, data.ssi2 || data.calling_ssi, data.ssi);
         if (!this._filterAllows('call_setup')) return;
         if (data.calling_ssi) this._touchTerminal(data.calling_ssi, 'call_setup', { gssi: data.ssi, call_id: data.call_id });
         if (data.ssi2) this._touchTerminal(data.ssi2, 'call_setup', { gssi: data.ssi, call_id: data.call_id });
@@ -1574,6 +1769,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'call_connect') {
         if (this._isLockedOut(data.ssi) || this._isHoldFiltered(data.ssi)) return;
+        this._recStart(data.call_id, data.ssi2 || data.calling_ssi, data.ssi);
         if (!this._filterAllows('call_connect')) return;
         if (data.calling_ssi) this._touchTerminal(data.calling_ssi, 'call_connect', { gssi: data.ssi, call_id: data.call_id });
         if (data.ssi2) this._touchTerminal(data.ssi2, 'call_connect', { gssi: data.ssi, call_id: data.call_id });
@@ -1596,6 +1792,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'tx_grant') {
         if (this._isLockedOut(data.ssi) || this._isHoldFiltered(data.ssi)) return;
+        this._recStart(data.call_id, data.ssi2 || data.calling_ssi, data.ssi);
         if (!this._filterAllows('tx_grant')) return;
         if (data.calling_ssi) this._touchTerminal(data.calling_ssi, 'tx_grant', { gssi: data.ssi, call_id: data.call_id, tx: true });
         if (data.ssi2) this._touchTerminal(data.ssi2, 'tx_grant', { gssi: data.ssi, call_id: data.call_id, tx: true });
@@ -1620,6 +1817,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'call_release') {
         this._txStopAll();   // zamknij otwarty segment airtime
+        this._recStop();     // domknij nagranie WAV rozmowy
         if (!this._filterAllows('call_release')) {
             this._currentCall = null; this._stopDurationTimer(); this._renderTttWindow();
             el.find('.tetra-call-status').text('Idle').css('color', '#868e96'); return;
@@ -1661,6 +1859,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'call_disconnect') {
         this._txStopAll();   // zamknij otwarty segment airtime
+        this._recStop();     // domknij nagranie WAV rozmowy
         if (!this._filterAllows('call_disconnect')) return;
         var dc = this._lookupDisconnectionCause(data.disconnect_cause);
         this._logActivity('<b>Call ID: ' + (data.call_id || '?') + '</b> — D-Disconnect (' + data.disconnect_cause + (dc ? ' — ' + dc : '') + ')', '#ff8787');
