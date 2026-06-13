@@ -36,6 +36,8 @@ function TetraMetaPanel(el) {
     this._networkEncrypted = false; // z netinfo (crypt==2) — steruje domyślną widocznością ssi_addr
     this._ssiSeenAt = {};  // ssi -> first appearance Date.now() for TSI correlation
     this._terminalDb = {}; // ssi -> aggregated terminal info
+    this._hourHist = new Array(24).fill(0); // hour-of-day histogram of interesting events (heatmapa)
+    this._statsSort = 'airtime'; // sortowanie tabeli statystyk: airtime|tx|calls|last
     this._filters = {};    // event-kind -> bool (default true if missing)
     this._remoteWin = null;
     this._compact = false;
@@ -154,12 +156,14 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         '      <span class="ttt-tab ttt-tab-sds" data-tab="sds" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em">SDS <span class="ttt-sds-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-dmo" data-tab="dmo" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="DM-MS direct mode signalling z pliku JSON (offline analiza)">DMO <span class="ttt-dmo-count" style="color:#789">(0)</span></span>'+
         '      <span class="ttt-tab ttt-tab-encr" data-tab="encr" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Encrypted call activity — wnioskowane z clear-text nagłówków PDU (bez deszyfrowania)">🔒 Encrypted <span class="ttt-encr-count" style="color:#789">(0)</span></span>'+
+        '      <span class="ttt-tab ttt-tab-stats" data-tab="stats" style="cursor:pointer;padding:3px 10px;border-radius:3px 3px 0 0;background:#0b1622;color:#9ab;font-size:0.85em" title="Statystyki: ranking SSI wg airtime/TX + heatmapa godzinowa">📊 Statystyki</span>'+
         '    </div>'+
         '    <div class="ttt-log" style="font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak zdarzeń</div>'+
         '    <div class="ttt-msreg-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak rejestracji</div>'+
         '    <div class="ttt-sds-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak SDS</div>'+
         '    <div class="ttt-dmo-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4"><div style="color:#789">załaduj <code>dmo_demo.json</code> przyciskiem [Load DMO JSON] (offline DMAC-SYNC PDU)</div><button class="ttt-dmo-load" style="margin-top:6px;background:#1a3050;border:1px solid #234;color:#cde;padding:3px 10px;cursor:pointer;border-radius:2px">Load DMO JSON</button></div>'+
         '    <div class="ttt-encr-list" style="display:none;font-family:monospace;font-size:0.78em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:4px;border-radius:2px;line-height:1.4">brak encrypted activity</div>'+
+        '    <div class="ttt-stats-list" style="display:none;font-size:0.82em;color:#cde;height:330px;overflow-y:auto;border:1px solid #234;background:#021;padding:6px;border-radius:2px">statystyki</div>'+
         '  </div>'+
         '</div>';
     document.body.appendChild(win);
@@ -186,6 +190,14 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
             self._encryptedLog = [];
             win.querySelector('.ttt-encr-list').innerHTML = 'brak encrypted activity';
             win.querySelector('.ttt-encr-count').textContent = '(0)';
+        } else if (tab === 'stats') {
+            // Reset liczników statystyk (heatmapa + airtime/TX) bez usuwania terminali.
+            self._hourHist = new Array(24).fill(0);
+            for (var sk in self._terminalDb) {
+                var st = self._terminalDb[sk];
+                st.airtimeMs = 0; st._txOpenAt = null; st.txCount = 0;
+            }
+            self._renderStats();
         } else {
             self._activityLog = [];
             win.querySelector('.ttt-log').innerHTML = 'brak zdarzeń';
@@ -231,6 +243,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
         win.querySelector('.ttt-sds-list').style.display = name === 'sds' ? 'block' : 'none';
         win.querySelector('.ttt-dmo-list').style.display = name === 'dmo' ? 'block' : 'none';
         win.querySelector('.ttt-encr-list').style.display = name === 'encr' ? 'block' : 'none';
+        win.querySelector('.ttt-stats-list').style.display = name === 'stats' ? 'block' : 'none';
     };
     tabs.forEach(function(t){
         t.addEventListener('click', function(){
@@ -245,6 +258,7 @@ TetraMetaPanel.prototype._ensureTttWindow = function() {
                     return '<div style="padding:1px 2px;border-bottom:1px solid #122">' + l + '</div>';
                 }).join('');
             }
+            if (tab === 'stats') self._renderStats();
         });
     });
     setActive('activity');
@@ -335,6 +349,9 @@ TetraMetaPanel.prototype._renderTttWindow = function() {
     w.querySelector('.ttt-msreg-count').textContent = '(' + this._msRegLog.length + ')';
     w.querySelector('.ttt-sds-list').innerHTML = this._sdsLog.length ? this._sdsLog.join('') : 'brak SDS';
     w.querySelector('.ttt-sds-count').textContent = '(' + this._sdsLog.length + ')';
+    // Live-odświeżanie statystyk tylko gdy zakładka aktywna (uniknięcie zbędnej pracy).
+    var statsTab = w.querySelector('.ttt-tab-stats');
+    if (statsTab && statsTab.getAttribute('data-active') === '1') this._renderStats();
     this._renderRemote();
 };
 
@@ -755,11 +772,14 @@ TetraMetaPanel.prototype._touchTerminal = function(ssi, src, extra) {
         t = this._terminalDb[key] = {
             ssi: key, firstSeen: Date.now(), lastSeen: Date.now(),
             sources: {}, groups: {}, calls: {}, encr: null, subscr_class: null,
-            la: null, txCount: 0, lastCallId: null, lastAction: null
+            la: null, txCount: 0, lastCallId: null, lastAction: null,
+            airtimeMs: 0, _txOpenAt: null
         };
     }
     t.lastSeen = Date.now();
     if (src) t.sources[src] = (t.sources[src] || 0) + 1;
+    // Heatmapa: licz tylko zdarzenia "interesujące" (nie okresowy active_ssi co 10 s).
+    if (src && src !== 'active_ssi') this._hourHist[new Date().getHours()]++;
     if (extra) {
         if (extra.gssi) t.groups[String(extra.gssi)] = true;
         if (extra.call_id != null) { t.calls[String(extra.call_id)] = true; t.lastCallId = extra.call_id; }
@@ -770,6 +790,40 @@ TetraMetaPanel.prototype._touchTerminal = function(ssi, src, extra) {
         if (extra.action) t.lastAction = extra.action;
     }
     return t;
+};
+
+// Airtime (czas nadawania) per SSI. Na monitorowanym nośniku w danej chwili nadaje
+// jeden terminal, więc otwarcie nowego segmentu zamyka poprzednie. Pojedynczy segment
+// jest ograniczony (cap), by zgubiony D-Release nie zawyżył statystyki w nieskończoność.
+TetraMetaPanel.prototype._TX_SEG_CAP_MS = 180000; // 3 min — twardy limit jednego segmentu
+TetraMetaPanel.prototype._txStart = function(ssi) {
+    if (!ssi) return;
+    this._txStopAll();
+    var t = this._terminalDb[String(ssi)];
+    if (t) t._txOpenAt = Date.now();
+};
+TetraMetaPanel.prototype._txStopAll = function() {
+    var now = Date.now();
+    for (var k in this._terminalDb) {
+        var t = this._terminalDb[k];
+        if (t && t._txOpenAt) {
+            t.airtimeMs += Math.min(now - t._txOpenAt, this._TX_SEG_CAP_MS);
+            t._txOpenAt = null;
+        }
+    }
+};
+// Airtime łącznie z ewentualnie wciąż otwartym segmentem (do podglądu live).
+TetraMetaPanel.prototype._airtimeMs = function(t) {
+    var ms = t.airtimeMs || 0;
+    if (t._txOpenAt) ms += Math.min(Date.now() - t._txOpenAt, this._TX_SEG_CAP_MS);
+    return ms;
+};
+TetraMetaPanel.prototype._fmtDur = function(ms) {
+    var s = Math.round((ms || 0) / 1000);
+    var m = Math.floor(s / 60); s = s % 60;
+    var h = Math.floor(m / 60); m = m % 60;
+    var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+    return h > 0 ? (h + ':' + pad(m) + ':' + pad(s)) : (m + ':' + pad(s));
 };
 
 TetraMetaPanel.prototype._renderTerminalSummary = function(ssi) {
@@ -796,8 +850,102 @@ TetraMetaPanel.prototype._renderTerminalSummary = function(ssi) {
     if (groups.length) lines.push('grupy: ' + groups.join(', '));
     if (Object.keys(t.calls).length) lines.push('calls: ' + Object.keys(t.calls).length + (t.lastCallId != null ? ' (last:' + t.lastCallId + ')' : ''));
     if (t.txCount) lines.push('TX count: ' + t.txCount);
+    var air = this._airtimeMs(t);
+    if (air > 0) lines.push('airtime: ' + this._fmtDur(air));
     if (sources.length) lines.push('źródła: ' + sources.join(', '));
     return '<div style="margin-left:18px;color:#789;font-size:0.92em;border-left:2px solid #345;padding-left:6px">'+lines.join(' · ')+'</div>';
+};
+
+// Dashboard statystyk: ranking SSI (wg airtime/TX/calls/last) + heatmapa godzinowa.
+// Dane pochodzą z _terminalDb (per-sesja, kasowane przy session_reset).
+TetraMetaPanel.prototype._renderStats = function() {
+    if (!this._tttWin) return;
+    var listEl = this._tttWin.querySelector('.ttt-stats-list');
+    if (!listEl) return;
+    var self = this;
+    var terms = [];
+    for (var k in this._terminalDb) terms.push(this._terminalDb[k]);
+
+    // Heatmapa godzinowa (24 kubełki, lokalny czas).
+    var hist = this._hourHist || new Array(24).fill(0);
+    var maxH = Math.max.apply(null, hist.concat([1]));
+    var heat = '<div style="margin-bottom:8px">'+
+        '<div style="color:#9ab;font-size:0.85em;margin-bottom:3px">Aktywność wg godziny (zdarzenia sygnalizacyjne, czas lokalny)</div>'+
+        '<div style="display:flex;gap:1px;align-items:flex-end;height:46px">';
+    for (var h = 0; h < 24; h++) {
+        var v = hist[h];
+        var frac = v / maxH;
+        var hgt = Math.max(2, Math.round(frac * 44));
+        var col = v === 0 ? '#142' : 'rgb(' + Math.round(40 + frac * 180) + ',' + Math.round(120 + frac * 100) + ',80)';
+        heat += '<div title="' + h + ':00 — ' + v + ' zdarzeń" style="flex:1;height:' + hgt + 'px;background:' + col + ';border-radius:1px"></div>';
+    }
+    heat += '</div><div style="display:flex;gap:1px;color:#567;font-size:0.62em;margin-top:1px">';
+    for (var h2 = 0; h2 < 24; h2 += 3) heat += '<div style="flex:3;text-align:left">' + h2 + 'h</div>';
+    heat += '</div></div>';
+
+    if (!terms.length) {
+        listEl.innerHTML = heat + '<div style="color:#789;padding:8px">Brak terminali w bazie — czekam na ruch (rejestracje, połączenia, TX).</div>';
+        return;
+    }
+
+    // Sortowanie.
+    var sortKey = this._statsSort || 'airtime';
+    var sorters = {
+        airtime: function(a, b){ return self._airtimeMs(b) - self._airtimeMs(a); },
+        tx:      function(a, b){ return (b.txCount || 0) - (a.txCount || 0); },
+        calls:   function(a, b){ return Object.keys(b.calls).length - Object.keys(a.calls).length; },
+        last:    function(a, b){ return b.lastSeen - a.lastSeen; }
+    };
+    terms.sort(sorters[sortKey] || sorters.airtime);
+    var totalAir = terms.reduce(function(s, t){ return s + self._airtimeMs(t); }, 0);
+
+    var hdr = function(key, lab){
+        var on = sortKey === key;
+        return '<th data-sort="' + key + '" style="cursor:pointer;text-align:left;padding:2px 5px;color:' +
+            (on ? '#cde' : '#9ab') + ';border-bottom:1px solid #234">' + lab + (on ? ' ▾' : '') + '</th>';
+    };
+    var th = function(lab, align){
+        return '<th style="text-align:' + (align || 'left') + ';padding:2px 5px;color:#9ab;border-bottom:1px solid #234">' + lab + '</th>';
+    };
+    var fmtT = function(ts){ var d = new Date(ts), p = function(n){ return n < 10 ? '0' + n : '' + n; };
+        return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
+
+    var rows = terms.slice(0, 50).map(function(t, i){
+        var lbl = self._labelFor('issi', t.ssi);
+        var enc = t.encr === 2 ? '🔒' : t.encr === 1 ? 'clear' : '—';
+        var groups = Object.keys(t.groups).map(function(g){
+            var gl = self._labelFor('gssi', g); return gl ? g + '[' + gl + ']' : g;
+        });
+        var air = self._airtimeMs(t);
+        var live = t._txOpenAt ? ' style="color:#51cf66;font-weight:bold"' : '';
+        return '<tr style="border-bottom:1px solid #122"' + live + '>' +
+            '<td style="padding:2px 5px;color:#567">' + (i + 1) + '</td>' +
+            '<td style="padding:2px 5px;color:#cde">' + t.ssi + (lbl ? ' <span style="color:#9cf">[' + lbl + ']</span>' : '') + (t._txOpenAt ? ' 🔴' : '') + '</td>' +
+            '<td style="padding:2px 5px;color:#51cf66;font-family:monospace">' + (air > 0 ? self._fmtDur(air) : '—') + '</td>' +
+            '<td style="padding:2px 5px;text-align:right">' + (t.txCount || 0) + '</td>' +
+            '<td style="padding:2px 5px;text-align:right">' + Object.keys(t.calls).length + '</td>' +
+            '<td style="padding:2px 5px">' + enc + '</td>' +
+            '<td style="padding:2px 5px;color:#9ab">' + (groups.length ? groups.join(',') : '—') + '</td>' +
+            '<td style="padding:2px 5px;color:#789;font-family:monospace">' + fmtT(t.lastSeen) + '</td>' +
+        '</tr>';
+    }).join('');
+
+    var summary = '<div style="color:#9ab;font-size:0.85em;margin-bottom:4px">Terminali: <b style="color:#cde">' + terms.length +
+        '</b> · łączny airtime: <b style="color:#51cf66">' + this._fmtDur(totalAir) + '</b>' +
+        (terms.length > 50 ? ' · (tabela: top 50)' : '') + '</div>';
+
+    var table = '<table style="width:100%;border-collapse:collapse;font-size:0.95em">' +
+        '<thead><tr>' + th('#') + th('SSI') + hdr('airtime', 'Airtime') + hdr('tx', 'TX') +
+        hdr('calls', 'Calls') + th('Enc') + th('Grupy') + hdr('last', 'Last') + '</tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>';
+
+    listEl.innerHTML = heat + summary + table;
+    listEl.querySelectorAll('th[data-sort]').forEach(function(thEl){
+        thEl.addEventListener('click', function(){
+            self._statsSort = thEl.getAttribute('data-sort');
+            self._renderStats();
+        });
+    });
 };
 
 TetraMetaPanel.prototype._showLabelsEditor = function() {
@@ -978,6 +1126,7 @@ TetraMetaPanel.prototype._renderDmoData = function(data, srcPath) {
 TetraMetaPanel.prototype._exportCsv = function() {
     var tab = this._tttWin && this._tttWin.querySelector('.ttt-tab[data-active="1"]');
     var name = tab ? tab.getAttribute('data-tab') : 'activity';
+    if (name === 'stats') { this._exportStatsCsv(); return; }
     var log = name === 'msreg' ? this._msRegLog : name === 'sds' ? this._sdsLog : this._activityLog;
     if (!log.length) { alert('Pusta lista'); return; }
     // Strip HTML; reverse to chrono order
@@ -992,6 +1141,40 @@ TetraMetaPanel.prototype._exportCsv = function() {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'tetra_' + name + '_' + ts + '.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+};
+
+// CSV statystyk: jeden wiersz na terminal (z _terminalDb), kolejność wg aktualnego sortowania.
+TetraMetaPanel.prototype._exportStatsCsv = function() {
+    var self = this;
+    var terms = [];
+    for (var k in this._terminalDb) terms.push(this._terminalDb[k]);
+    if (!terms.length) { alert('Brak danych statystyk'); return; }
+    var sortKey = this._statsSort || 'airtime';
+    var sorters = {
+        airtime: function(a, b){ return self._airtimeMs(b) - self._airtimeMs(a); },
+        tx:      function(a, b){ return (b.txCount || 0) - (a.txCount || 0); },
+        calls:   function(a, b){ return Object.keys(b.calls).length - Object.keys(a.calls).length; },
+        last:    function(a, b){ return b.lastSeen - a.lastSeen; }
+    };
+    terms.sort(sorters[sortKey] || sorters.airtime);
+    var iso = function(ts){ return new Date(ts).toISOString(); };
+    var q = function(v){ return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+    var header = 'ssi;label;airtime_s;tx_count;calls;encr;groups;first_seen;last_seen';
+    var lines = terms.map(function(t){
+        var lbl = self._labelFor('issi', t.ssi) || '';
+        var enc = t.encr === 2 ? 'enabled' : t.encr === 1 ? 'clear' : '';
+        var groups = Object.keys(t.groups).join('|');
+        return [q(t.ssi), q(lbl), Math.round(self._airtimeMs(t) / 1000), (t.txCount || 0),
+            Object.keys(t.calls).length, q(enc), q(groups), q(iso(t.firstSeen)), q(iso(t.lastSeen))].join(';');
+    });
+    var csv = header + '\n' + lines.join('\n');
+    var blob = new Blob([csv], {type: 'text/csv;charset=utf-8'});
+    var ts = new Date().toISOString().replace(/[:.]/g, '-');
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tetra_stats_' + ts + '.csv';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
 };
@@ -1208,6 +1391,7 @@ TetraMetaPanel.prototype.update = function(data) {
         this._ssiSeenAt = {};
         this._activeSsiPrev = {};
         this._terminalDb = {};
+        this._hourHist = new Array(24).fill(0);
         this._currentCall = null;
         this._stopDurationTimer();
         var $el = $(this.el);
@@ -1429,11 +1613,13 @@ TetraMetaPanel.prototype.update = function(data) {
         c.status = 'TX';
         c.last_update = this._timestamp();
         if (issi) { c.issis.add(issi); c.tx_ssi = issi; }
+        if (issi) this._txStart(issi);   // otwórz segment airtime dla nadającego (zamyka poprzedni)
         if (c.tx_ssi !== prevTx) this._playSound('tx');
         this._renderTttWindow();
         this._logActivity('<b>Call ID: ' + (data.call_id || '?') + '</b> — D-TX-Granted SSI: ' + (issi || '?'), '#51cf66');
     }
     else if (type === 'call_release') {
+        this._txStopAll();   // zamknij otwarty segment airtime
         if (!this._filterAllows('call_release')) {
             this._currentCall = null; this._stopDurationTimer(); this._renderTttWindow();
             el.find('.tetra-call-status').text('Idle').css('color', '#868e96'); return;
@@ -1474,6 +1660,7 @@ TetraMetaPanel.prototype.update = function(data) {
         this._addSdsEvent(data);
     }
     else if (type === 'call_disconnect') {
+        this._txStopAll();   // zamknij otwarty segment airtime
         if (!this._filterAllows('call_disconnect')) return;
         var dc = this._lookupDisconnectionCause(data.disconnect_cause);
         this._logActivity('<b>Call ID: ' + (data.call_id || '?') + '</b> — D-Disconnect (' + data.disconnect_cause + (dc ? ' — ' + dc : '') + ')', '#ff8787');
@@ -1500,6 +1687,7 @@ TetraMetaPanel.prototype.update = function(data) {
     }
     else if (type === 'tx_state') {
         var st = data.subtype || '?';
+        if (st !== 'continue') this._txStopAll();   // ceased/interrupt/wait kończą segment airtime
         if (!this._filterAllows('tx_' + st)) return;
         var stColor = st === 'ceased' ? '#fc9' : st === 'interrupt' ? '#ff8787' : st === 'wait' ? '#ffd43b' : '#9cf';
         this._logActivity('<b>Call ID: ' + (data.call_id || '?') + '</b> — TX ' + st.toUpperCase(), stColor);
