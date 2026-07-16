@@ -27,6 +27,16 @@ Autor: SP8MB. Odsłuch tylko ruchu, do którego masz uprawnienia (własna sieć 
 
 Bez klucza tryb działa jak zwykły DMR (ruch zaszyfrowany zostaje oznaczony jako `encrypted`).
 
+## Okno pozycji (LRRP) — pływające okno nad waterfallem
+`dmr_ep_panel.js` (`DmrEpMetaPanel`) dostaje te same zdarzenia `lrrp` co mapa i pokazuje je w
+**pływającym, przeciąganym oknie** nad widmem (wzorzec jak okno TETRA: `position:fixed`,
+drag za pasek tytułu, przycisk ✕, `z-index:10000`). Tabela `radio → lat,lon (link do OSM) →
+prędkość → czas`, aktualizowana w miejscu (jedna linia na radio). Okno **auto-otwiera się** przy
+pierwszym fixie; ponowne otwarcie przyciskiem „📍 Okno pozycji (LRRP)" w panelu DMR EP. Okno i
+przycisk wstrzykiwane dynamicznie w JS (bez zmian index.html), więc deploy = re-patch
+`lib/MetaPanel.js` (restore `.bak.dmrep_panel` + `patch_dmr_ep_panel.py`); `compiled/receiver.js`
+generowany z `lib/*.js` → Ctrl+Shift+R w przeglądarce, **bez restartu openwebrx**.
+
 ## Panel „DMR EP" (wyświetlanie zdekodowanych danych)
 Dedykowany panel meta pokazuje przewijany log zdekodowanych/odszyfrowanych ramek (source→target,
 `🔓 odszyfrowano RC4 ALGxx/KIDxx`). Pliki: `dmr_ep_panel.js` (`DmrEpMetaPanel`, → wstrzyknięty do
