@@ -12,3 +12,7 @@ tetra/ttt_analysis/
 __pycache__/
 *.pyc
 tetra/test_data/
+
+# DMR EP RC4 key (secret, per-network) — never commit
+tetra/dmr_ep.key
+*.key
