@@ -27,6 +27,14 @@ Autor: SP8MB. Odsłuch tylko ruchu, do którego masz uprawnienia (własna sieć 
 
 Bez klucza tryb działa jak zwykły DMR (ruch zaszyfrowany zostaje oznaczony jako `encrypted`).
 
+## Panel „DMR EP" (wyświetlanie zdekodowanych danych)
+Dedykowany panel meta pokazuje przewijany log zdekodowanych/odszyfrowanych ramek (source→target,
+`🔓 odszyfrowano RC4 ALGxx/KIDxx`). Pliki: `dmr_ep_panel.js` (`DmrEpMetaPanel`, → wstrzyknięty do
+`lib/MetaPanel.js`, `MetaPanel.types["dmrep"]`), `patch_dmr_ep_panel.py` (patch MetaPanel.js +
+DemodulatorPanel.js `dmr-ep→dmrep` + panel div w index.html). Dekoder emituje `protocol="DMR"` →
+wszystkie panele meta dostają `update()`; panel dmrep pokazywany dla trybu dmr-ep. `compiled/receiver.js`
+budowany z `lib/*.js` → patch dociera bez restartu (Ctrl+Shift+R w przeglądarce).
+
 ## Łańcuch (live w OWRX+)
 ```
 IF IQ 48k (complex) → dyskryminator FM (numpy) → TCP 127.0.0.1:7355
