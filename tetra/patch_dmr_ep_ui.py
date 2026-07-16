@@ -36,14 +36,14 @@ def patch(path, already, transform, compile_py=False):
 
 
 FORM = (
-    '                        <div class="openwebrx-panel-line openwebrx-dmr-ep-keys" style="flex-direction:column;align-items:stretch;">\n'
-    '                            <div style="font-size:11px;margin-bottom:2px;">&#128273; Klucze DMR EP (RC4 hex, jeden na linie)</div>\n'
-    '                            <textarea id="dmr-ep-key-input" rows="2" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;"></textarea>\n'
-    '                            <div style="display:flex;align-items:center;margin-top:3px;">\n'
-    '                                <div class="openwebrx-button" style="flex:0 0 auto;" onclick="DmrEpKeys.save();">Zapisz klucze</div>\n'
-    '                                <span id="dmr-ep-key-status" style="font-size:11px;margin-left:8px;"></span>\n'
-    '                            </div>\n'
+    '                    <div class="openwebrx-panel-line openwebrx-dmr-ep-keys" style="flex-direction:column;align-items:stretch;border:1px solid #888;border-radius:4px;padding:5px;margin:4px 0;">\n'
+    '                        <div style="font-weight:bold;margin-bottom:3px;">&#128273; Klucze DMR EP (RC4)</div>\n'
+    '                        <textarea id="dmr-ep-key-input" rows="2" spellcheck="false" placeholder="hex, jeden na linie (np. 0123456789)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;"></textarea>\n'
+    '                        <div style="display:flex;align-items:center;margin-top:4px;">\n'
+    '                            <div class="openwebrx-button" style="flex:0 0 auto;" onclick="DmrEpKeys.save();">Zapisz klucze</div>\n'
+    '                            <span id="dmr-ep-key-status" style="font-size:11px;margin-left:8px;"></span>\n'
     '                        </div>\n'
+    '                    </div>\n'
 )
 
 
@@ -57,15 +57,12 @@ def do_index(src):
             break
     else:
         return None
-    # 2) formularz zaraz po otwarciu sekcji Settings
-    si = next((k for k, l in enumerate(lines) if 'id="openwebrx-section-settings"' in l), None)
-    if si is None:
+    # 2) formularz na gorze panelu Receiver, tuz nad sekcja "Modes" (zawsze widoczny)
+    mi = next((k for k, l in enumerate(lines) if 'id="openwebrx-section-modes"' in l), None)
+    if mi is None:
         return None
-    for k in range(si, min(si + 4, len(lines))):
-        if '<div class="openwebrx-section">' in lines[k]:
-            lines.insert(k + 1, FORM.rstrip("\n"))
-            return "\n".join(lines)
-    return None
+    lines.insert(mi, FORM.rstrip("\n"))
+    return "\n".join(lines)
 
 
 HANDLER = (

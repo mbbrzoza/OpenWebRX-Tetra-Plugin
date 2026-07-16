@@ -17,7 +17,7 @@ Autor: SP8MB. Odsłuch tylko ruchu, do którego masz uprawnienia (własna sieć 
 | `dmr_ep.key` | klucz(e) RC4 hex, **gitignored** | `/opt/openwebrx-tetra/dmr_ep.key` |
 
 ## Wpisanie klucza
-- **Panel WWW** (docelowe): sekcja „🔑 Klucze DMR EP" w Settings — wpisz klucze hex
+- **Panel WWW** (docelowe): box „🔑 Klucze DMR EP" na górze panelu *Receiver* (pod wyborem profilu, nad „Modes") — wpisz klucze hex
   (jeden na linię) i „Zapisz". JS wysyła `ws.send({type:"dmr_ep_key",keys})`, handler w
   `connection.py` sanityzuje i zapisuje `/var/lib/openwebrx/dmr_ep.key` (0600, właściciel
   openwebrx). Dekoder **hot-reloaduje** się (`os.execv`) bez restartu OWRX. Pliki:
