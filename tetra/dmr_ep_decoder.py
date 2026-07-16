@@ -51,6 +51,11 @@ _RE_VCALL = re.compile(r"SLOT (\d) TGT=(\d+) SRC=(\d+) FLCO=0x(\w+).*?SVC=0x(\w+
 _RE_ENC = re.compile(r"Slot (\d) - Encrypted PDU")
 _RE_PI = re.compile(r"ALG:\s*(\w+);\s*Key ID:\s*(\w+);\s*MI\(32\):\s*(\w+);\s*(RC4|AES\d*|DES|BP)")
 _RE_KEYSET = re.compile(r"Encryption Key Value set to")
+# MNIS LRRP position report — a multi-line block: "Lat: .. Lon: ..", then Radius, Speed.
+_RE_LATLON = re.compile(r"Lat:\s*(-?\d+\.\d+)\s+Lon:\s*(-?\d+\.\d+)")
+_RE_RADIUS = re.compile(r"Radius:\s*(\d+)\s*m")
+_RE_SPEED = re.compile(r"Speed:\s*[\d.]+\s*m/s\s+([\d.]+)\s*km/h")
+_RE_MBPDU = re.compile(r"Slot (\d) - Multi Block PDU Message")
 
 
 # Meta sink: live path -> stderr (OWRX reads meta there, audio goes to stdout);
@@ -62,6 +67,15 @@ def emit(meta):
     """Write one OWRX-style meta JSON line to the active meta stream."""
     _META.write(json.dumps(meta) + "\n")
     _META.flush()
+
+
+def _flush_lrrp(state, sink, src=None):
+    """Emit any pending LRRP fix as a meta event (-> OWRX map pin + panel)."""
+    p = state.pop("lrrp_pend", None)
+    if p and "lat" in p:
+        sink({"protocol": "DMR", "lrrp": True, "slot": p.get("slot"),
+              "source": src or p.get("src"), "lat": p["lat"], "lon": p["lon"],
+              "radius": p.get("radius"), "speed": p.get("speed")})
 
 
 def parse_line(line, state, sink):
@@ -95,11 +109,45 @@ def parse_line(line, state, sink):
     if m:
         if m.re is _RE_HDR:
             slot, src, tgt = int(m.group(1)), m.group(2), m.group(3)
+            if src and src != "0":
+                # Data Header carries the true sender of the PDU whose payload (LRRP)
+                # follows; remember it per slot. Preamble CSBKs must NOT overwrite this.
+                state.setdefault("hdr_src", {})[slot] = src
+                state["last_hdr_src"] = src
         else:
             slot, src, tgt = state.get("slot", 1), m.group(1), m.group(2)
         state["slot"] = slot
         sink({"protocol": "DMR", "slot": slot, "source": src, "target": tgt,
               "datatype": "data"})
+        return
+
+    # LRRP position (MNIS multi-block PDU): accumulate Lat/Lon (+ Radius/Speed), then emit
+    # on the "Slot N - Multi Block PDU Message" trailer, tagged with slot N's Data-Header
+    # sender (Preamble CSBKs printed in between carry a different flow's source).
+    m = _RE_LATLON.search(line)
+    if m:
+        _flush_lrrp(state, sink, state.get("last_hdr_src"))   # flush a stale fix if any
+        lat, lon = float(m.group(1)), float(m.group(2))
+        if abs(lat) <= 90 and abs(lon) <= 180 and (abs(lat) > 1e-4 or abs(lon) > 1e-4):
+            state["lrrp_pend"] = {"lat": lat, "lon": lon}
+        return
+    if "lrrp_pend" in state:
+        m = _RE_RADIUS.search(line)
+        if m:
+            state["lrrp_pend"]["radius"] = int(m.group(1))
+            return
+        m = _RE_SPEED.search(line)
+        if m:
+            state["lrrp_pend"]["speed"] = float(m.group(1))
+            return
+    m = _RE_MBPDU.search(line)
+    if m:
+        slot = int(m.group(1))
+        state["slot"] = slot
+        if "lrrp_pend" in state:
+            state["lrrp_pend"]["slot"] = slot
+            src = (state.get("hdr_src") or {}).get(slot) or state.get("last_hdr_src")
+            _flush_lrrp(state, sink, src)
         return
 
     m = _RE_VCALL.search(line)
@@ -112,6 +160,7 @@ def parse_line(line, state, sink):
 
     m = _RE_SYNC.search(line)
     if m:
+        _flush_lrrp(state, sink, state.get("last_hdr_src"))   # safety net for an orphan fix
         active = 1 if m.group(1).startswith("[") else (2 if m.group(2).startswith("[") else None)
         state["cc"] = int(m.group(3))
         if active:
@@ -166,7 +215,7 @@ def dsdfme_cmd(key, in_spec, out_spec, extra=None):
 
 # ---- selftest: run dsd-fme on a file, parse events, print meta ------------
 def run_selftest(disc_wav, key):
-    state, counts = {}, {"events": 0, "encrypted": 0, "decrypted": 0, "source_target": 0}
+    state, counts = {}, {"events": 0, "encrypted": 0, "decrypted": 0, "source_target": 0, "lrrp": 0}
 
     def sink(meta):
         counts["events"] += 1
@@ -176,6 +225,8 @@ def run_selftest(disc_wav, key):
             counts["decrypted"] += 1
         if meta.get("source") and meta.get("target"):
             counts["source_target"] += 1
+        if meta.get("lrrp"):
+            counts["lrrp"] += 1
         emit(meta)
 
     cmd = dsdfme_cmd(key, disc_wav, "udp")   # -o udp: harmless sink, no audio device needed
@@ -185,10 +236,11 @@ def run_selftest(disc_wav, key):
     for line in proc.stdout:
         parse_line(line, state, sink)
     proc.wait()
+    _flush_lrrp(state, sink, state.get("last_hdr_src"))   # emit final pending fix (file has no trailing sync)
     sys.stderr.write(
-        "[dmr_ep] SELFTEST done: key=%s events=%d encrypted=%d decrypted=%d src/tgt=%d cc=%s\n"
+        "[dmr_ep] SELFTEST done: key=%s events=%d encrypted=%d decrypted=%d src/tgt=%d lrrp=%d cc=%s\n"
         % (key or "(none)", counts["events"], counts["encrypted"],
-           counts["decrypted"], counts["source_target"], state.get("cc"))
+           counts["decrypted"], counts["source_target"], counts["lrrp"], state.get("cc"))
     )
     return counts
 

@@ -43,7 +43,20 @@ IF IQ 48k (complex) → dyskryminator FM (numpy) → TCP 127.0.0.1:7355
    → zdarzenia dsd-fme → meta JSON na stderr → MetaParser → panel
 ```
 Meta w formacie zgodnym z panelem: `{"protocol":"DMR","slot":N,"source":..,"target":..}`
-plus rozszerzenie krypto `{"encrypted":true,"decrypted":true,"alg":"01","keyid":"28","cipher":"RC4","mi":..}`.
+plus rozszerzenie krypto `{"encrypted":true,"decrypted":true,"alg":"01","keyid":"28","cipher":"RC4","mi":..}`
+plus pozycja LRRP `{"lrrp":true,"source":"1030","lat":51.2212,"lon":22.6949,"radius":..,"speed":..}`.
+
+## Mapa — pozycje LRRP (GPS) na mapie OpenWebRX
+Ruch danych MOTOTRBO (MNIS) niesie **LRRP** — raporty pozycji GPS. dsd-fme dekoduje je do
+`Lat/Lon` (jawne, jeśli sieć nieszyfrowana; albo po odszyfrowaniu kluczem RC4). Dekoder
+składa blok `Lat`/`Radius`/`Speed` i emituje meta `lrrp`, wiążąc pozycję z nadawcą z
+**Data Header danej szczeliny** (Preamble CSBK po drodze NIE nadpisuje źródła; emisja na
+linii `Slot N - Multi Block PDU Message`). `csdr_module_dmr_ep.py._pushMap()` woła
+`owrx.map.Map.getSharedInstance().updateLocation("DMR-<src>", LatLngLocation(lat,lon), "DMR")`
+— pin pojawia się na mapie OWRX (klucz `DMR-<id_radia>`, tryb „DMR"), widoczny dla wszystkich
+klientów mapy, z auto-wygasaniem wg `map_position_retention_time`. Działa **na żywo** podczas
+odsłuchu trybu DMR EP na danym kanale; niezależne od otwarcia panelu (mapa dostaje pin nawet
+bez `metaWriter`).
 
 ## Instalacja na serwerze (nietestowana na produkcji w tym prototypie)
 ```bash
@@ -68,10 +81,22 @@ Wymaga `dsd-fme` w PATH (lub `/usr/local/bin/dsd-fme`) oraz `numpy`/`scipy`.
 Meta odszyfrowane: `ALG 01 / Key ID 0x28 / RC4`, ruch = ARS (radia 33000–56000 ↔ hub 64250).
 Zgodne z wcześniejszym złamaniem klucza (projekt `dmr_crack`).
 
+## Walidacja LRRP→mapa (2026-07-16, nagranie 168.775 + 169.125 MHz — SP8MB)
+`dmr_ep_decoder.py --selftest disc_<f>_noinv.wav` (sieci **nieszyfrowane**, MNIS data):
+
+| kanał | CC | fixy LRRP | przypisanie źródło→pozycja |
+|---|---|---|---|
+| 168.775 | 05 | 11 | 1020→(51.2230, 22.6162)×5, 1030→(51.2212, 22.6949)×6 |
+| 169.125 | 06 | 3 | 1040→(51.2320, 22.9264)×3 |
+
+Wszystkie fixy poprawnie przypisane do nadawcy (rejon Świdnik/Lublin — zgodny z lokalizacją RX).
+
 ## Przetestowane vs do zrobienia
 - ✅ Deszyfrowanie + ekstrakcja meta (rdzeń) — na nagraniu 148.512.
+- ✅ Ekstrakcja LRRP + piny na mapie OWRX — walidacja na 168.775/169.125 (14 fixów, przypisanie źródeł OK).
 - ✅ Patcher OWRX (modes/dsp/feature) — na atrapach, idempotentny, walidacja py_compile.
 - ⏳ Ścieżka live w OWRX (IQ→dyskryminator→TCP/UDP dsd-fme) — wymaga testu na serwerze z RTL.
+- ⏳ Wizualne potwierdzenie pinów na mapie SP8MB — wymaga deploya + odsłuchu DMR EP na żywo (dongiel).
 - ⏳ Fonia EP (AMBE) — nagranie 148.512 to dane (ARS); ten sam klucz odszyfruje fonię, jeśli
   używa tego samego ALG 01/KID 0x28.
 - ⏳ Docelowe pole klucza w ustawieniach OWRX (na razie plik/env).

@@ -73,18 +73,38 @@ class DmrEpDecoderModule(PopenModule):
     def _readMeta(self):
         try:
             for line in self.process.stderr:
-                if self.metaWriter is None:
-                    continue
                 line = line.strip()
                 if not line or not line.startswith(b"{"):
                     continue    # skip dsd-fme banner / [dmr_ep] status lines
                 try:
                     meta = json.loads(line)
-                    self.metaWriter.write(pickle.dumps(meta))
                 except (json.JSONDecodeError, Exception) as e:
                     logger.debug("DMR-EP meta parse error: %s", e)
+                    continue
+                # LRRP position -> pin on the OWRX map (independent of the panel/metaWriter).
+                if meta.get("lrrp") and meta.get("lat") is not None and meta.get("lon") is not None:
+                    self._pushMap(meta)
+                if self.metaWriter is not None:
+                    try:
+                        self.metaWriter.write(pickle.dumps(meta))
+                    except Exception as e:
+                        logger.debug("DMR-EP meta write error: %s", e)
         except (ValueError, OSError):
             pass
+
+    def _pushMap(self, meta):
+        """Place/refresh a DMR radio's LRRP position on the OpenWebRX map.
+        Runs in the OWRX process, so the shared Map singleton reaches all map clients."""
+        try:
+            from owrx.map import Map, LatLngLocation
+            src = meta.get("source") or "?"
+            Map.getSharedInstance().updateLocation(
+                "DMR-%s" % src,
+                LatLngLocation(float(meta["lat"]), float(meta["lon"])),
+                "DMR",
+            )
+        except Exception as e:
+            logger.debug("DMR-EP map push failed: %s", e)
 
     def setMetaWriter(self, writer: Writer) -> None:
         self.metaWriter = writer
