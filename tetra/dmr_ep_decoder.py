@@ -252,25 +252,64 @@ def run_live(key, in_port=7355, out_port=23456):
     proc.wait()
 
 
-KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dmr_ep.key")
+def _key_files():
+    """Kandydaci na plik klucza (kolejność = priorytet). Panel WWW zapisuje do
+    /var/lib/openwebrx (własność procesu openwebrx); /opt/... to fallback dev."""
+    files = []
+    ev = os.environ.get("DMR_EP_KEYFILE")
+    if ev:
+        files.append(ev)
+    files.append("/var/lib/openwebrx/dmr_ep.key")
+    files.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dmr_ep.key"))
+    return files
+
+
+# Podstawowa ścieżka zapisu z panelu WWW (obserwowana do hot-reload).
+KEY_FILE = "/var/lib/openwebrx/dmr_ep.key"
 
 
 def resolve_key(cli_key):
-    """Key precedence: --key > $DMR_RC4_KEY > dmr_ep.key file (hex, comments with #)."""
+    """Key precedence: --key > $DMR_RC4_KEY > plik klucza (hex, komentarze '#')."""
     if cli_key:
         return cli_key.strip()
     env = os.environ.get("DMR_RC4_KEY", "").strip()
     if env:
         return env
-    try:
-        with open(KEY_FILE) as f:
-            for ln in f:
-                ln = ln.split("#", 1)[0].strip()
-                if ln:
-                    return ln
-    except OSError:
-        pass
+    for kf in _key_files():
+        try:
+            with open(kf) as f:
+                for ln in f:
+                    ln = ln.split("#", 1)[0].strip()
+                    if ln:
+                        return ln
+        except OSError:
+            continue
     return ""
+
+
+def watch_key_and_reload(interval=2.0):
+    """Hot-reload: gdy zmieni się dmr_ep.key (np. zapisany z panelu WWW), zrestartuj
+    proces (execv) — deskryptory stdin/stdout/stderr przeżywają, więc OWRX pipe trwa,
+    a dsd-fme startuje z nowym kluczem bez restartu OWRX."""
+    def sig():
+        best = None
+        for kf in _key_files():
+            try:
+                m = os.stat(kf).st_mtime
+            except OSError:
+                continue
+            if best is None or m > best:
+                best = m
+        return best
+
+    last = sig()
+    while True:
+        time.sleep(interval)
+        cur = sig()
+        if cur != last:
+            sys.stderr.write("[dmr_ep] dmr_ep.key zmieniony -> reload dekodera\n")
+            sys.stderr.flush()
+            os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def main():
@@ -300,6 +339,9 @@ def main():
     elif args.selftest:
         run_selftest(args.selftest, key)
     else:
+        # live: bez klucza z CLI śledź plik klucza (panel WWW zapisuje dmr_ep.key)
+        if not args.key:
+            threading.Thread(target=watch_key_and_reload, daemon=True).start()
         run_live(key)
     return 0
 

@@ -16,10 +16,14 @@ Autor: SP8MB. Odsłuch tylko ruchu, do którego masz uprawnienia (własna sieć 
 | `patch_dmr_ep.py` | patch modes.py/dsp.py/feature.py (rejestracja trybu) | uruchamiany raz przy instalacji |
 | `dmr_ep.key` | klucz(e) RC4 hex, **gitignored** | `/opt/openwebrx-tetra/dmr_ep.key` |
 
-## Wpisanie klucza (3 sposoby, priorytet malejąco)
-1. `--key A1B2C3D4E5` (CLI / do testów),
-2. zmienna `DMR_RC4_KEY=A1B2C3D4E5`,
-3. plik `dmr_ep.key` obok dekodera (jedna linia hex, `#` = komentarz).
+## Wpisanie klucza
+- **Panel WWW** (docelowe): sekcja „🔑 Klucze DMR EP" w Settings — wpisz klucze hex
+  (jeden na linię) i „Zapisz". JS wysyła `ws.send({type:"dmr_ep_key",keys})`, handler w
+  `connection.py` sanityzuje i zapisuje `/var/lib/openwebrx/dmr_ep.key` (0600, właściciel
+  openwebrx). Dekoder **hot-reloaduje** się (`os.execv`) bez restartu OWRX. Pliki:
+  `dmr_ep_keys.js` (→ `htdocs/dmr_ep_keys.js`), `patch_dmr_ep_ui.py` (patch index.html + connection.py).
+- Alternatywnie (serwerowo): `--key <hex>` (CLI), env `DMR_RC4_KEY`, lub plik klucza.
+  Priorytet: `--key` > `DMR_RC4_KEY` > `/var/lib/openwebrx/dmr_ep.key` > `dmr_ep.key` obok dekodera.
 
 Bez klucza tryb działa jak zwykły DMR (ruch zaszyfrowany zostaje oznaczony jako `encrypted`).
 
