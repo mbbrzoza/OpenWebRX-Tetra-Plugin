@@ -423,7 +423,9 @@ cp "$SCRIPT_DIR/csdr_chain_tetra_dmo.py" "$OWRX_PYTHON/csdr/chain/tetra_dmo.py"
 log "Installed csdr/module/tetra{,_dmo}.py and csdr/chain/tetra{,_dmo}.py"
 
 # ── Install LoRa-APRS (tryb 'lora') ──
-if [[ -f "$SCRIPT_DIR/lora_decoder.py" ]]; then
+if grep -q '"lora-aprs"' "$OWRX_PYTHON/owrx/modes.py" 2>/dev/null; then
+    log "LoRa-APRS: OWRX+ ma natywny tryb lora-aprs - pomijam nasz modul 'lora'"
+elif [[ -f "$SCRIPT_DIR/lora_decoder.py" ]]; then
     cp "$SCRIPT_DIR/lora_decoder.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/lora_decoder.py"
     cp "$SCRIPT_DIR/csdr_module_lora.py" "$OWRX_PYTHON/csdr/module/lora.py"
@@ -566,6 +568,20 @@ PYEOF
 else
     log "  feature.py already patched"
 fi
+
+# --- OWRX+ >= 1.2.12x ma NATYWNY tryb "tetra" (cecha "tetra": ["tetrarx"], binarka tetrarx) ---
+# modes.py juz zawiera AnalogMode("tetra", ..., requirements=["tetra"]); nasz chain/module nadpisuja natywne,
+# wiec cecha musi wskazywac nasz demod (GNURadio + tetra-rx), inaczej tryb znika z listy (wymaganie "tetra"
+# bez spelnionej cechy tetrarx). Zweryfikowane 2026-10-11 na 1.2.126 (TetraLogger).
+if grep -q '"tetra": \["tetrarx"\]' "$OWRX_PYTHON/owrx/feature.py"; then
+    log "  feature.py: natywna cecha tetra (tetrarx) -> przekierowanie na tetra_demod"
+    sed -i 's/"tetra": \["tetrarx"\],/"tetra": ["tetra_demod"],   # TETRA plugin: nasz demod zamiast natywnego tetrarx/' "$OWRX_PYTHON/owrx/feature.py"
+elif ! grep -q '"tetra": \["tetra_demod"\]' "$OWRX_PYTHON/owrx/feature.py" && grep -q 'requirements=\["tetra"\]' "$OWRX_PYTHON/owrx/modes.py"; then
+    log "  feature.py: dodaje alias cechy tetra -> tetra_demod"
+    sed -i 's/"tetra_decoder": \["tetra_demod"\],/"tetra_decoder": ["tetra_demod"],\n            "tetra": ["tetra_demod"],/' "$OWRX_PYTHON/owrx/feature.py"
+fi
+python3 -m py_compile "$OWRX_PYTHON/owrx/feature.py" || error "feature.py: blad skladni po patchu cechy tetra"
+rm -rf "$OWRX_PYTHON/owrx/__pycache__"
 
 # --- Patch modes.py for TETRA DMO ---
 # Uwaga: mode name MUSI mieć dash, nie underscore — ModulationValidator regex
