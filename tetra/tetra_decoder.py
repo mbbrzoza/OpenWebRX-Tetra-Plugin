@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import threading
+import queue
 import time
 import wave
 
@@ -57,6 +58,8 @@ class CodecPipeline:
         self._sdecoder = None
         self._lock = threading.Lock()
         self._started = False
+        self._q = None            # PCM z sdecoder (watek-pompa) - decode() nigdy nie blokuje na read()
+        self._pump = None
 
     def start(self):
         cdecoder_path = os.path.join(TETRA_DIR, 'cdecoder')
@@ -83,7 +86,24 @@ class CodecPipeline:
         )
         os.close(pipe_r)
 
+        # Pompa PCM: sdecoder czasem oddaje PCM dopiero po KOLEJNEJ ramce (buforowanie) -
+        # blokujace read(PCM_OUTPUT_BYTES) w decode() wieszalo caly dekoder (2026-10-11, TetraLogger:
+        # glowny watek w read() potoku sdecoder, kolejka UDP TETMON rosla, zero metadanych).
+        self._q = queue.Queue()
+        self._pump = threading.Thread(target=self._pump_loop, args=(self._sdecoder.stdout, self._q), daemon=True)
+        self._pump.start()
         self._started = True
+
+    @staticmethod
+    def _pump_loop(f, q):
+        try:
+            while True:
+                b = os.read(f.fileno(), 4096)
+                if not b:
+                    break
+                q.put(b)
+        except Exception:
+            pass
 
     def decode(self, acelp_data):
         """Decode ACELP frame to PCM. Returns bytes or None."""
@@ -102,9 +122,18 @@ class CodecPipeline:
 
                 self._cdecoder.stdin.write(acelp_data)
                 self._cdecoder.stdin.flush()
-                pcm = self._sdecoder.stdout.read(PCM_OUTPUT_BYTES)
-                if pcm and len(pcm) == PCM_OUTPUT_BYTES:
-                    return pcm
+                # zbierz PCM, ktore jest (max 60 ms czekania na pierwszy kawalek) - bez blokowania na stale
+                out = bytearray()
+                try:
+                    out += self._q.get(timeout=0.06)
+                except queue.Empty:
+                    return None
+                while True:
+                    try:
+                        out += self._q.get_nowait()
+                    except queue.Empty:
+                        break
+                return bytes(out) if out else None
             except (BrokenPipeError, OSError):
                 self.stop()
             return None
@@ -1610,7 +1639,7 @@ def main():
                     # Advance virtual playout clock by the audio duration we
                     # just queued. If the clock was behind, snap to now first.
                     now = time.monotonic()
-                    audio_clock = max(audio_clock, now) + PCM_FRAME_SEC
+                    audio_clock = max(audio_clock, now) + len(pcm) / 2.0 / 8000.0   # PCM moze miec 1..n ramek
                 except (BrokenPipeError, OSError):
                     running = False
         else:
