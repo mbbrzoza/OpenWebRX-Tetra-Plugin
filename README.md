@@ -2,7 +2,7 @@
 
 **Author: SP8MB (mbbrzoza)**
 
-Digital-voice decoder plugin for [OpenWebRX+](https://github.com/luarvique/openwebrx). Adds four demodulation modes — **TETRA TMO**, **TETRA DMO**, **LoRa-APRS** and **DMR EP** — with full signaling extraction, voice decoding and real-time control panels in the OpenWebRX+ web UI.
+Digital-voice decoder plugin for [OpenWebRX+](https://github.com/luarvique/openwebrx). Adds demodulation modes — **TETRA TMO**, **TETRA DMO**, **LoRa-APRS**, **DMR EP** — plus cell identification for **LTE** and **GSM** (click a carrier on the waterfall), with signaling extraction, voice decoding and real-time panels in the OpenWebRX+ web UI.
 
 | Tryb / Mode | Opis / Description | Instalacja / Install |
 |---|---|---|
@@ -10,6 +10,8 @@ Digital-voice decoder plugin for [OpenWebRX+](https://github.com/luarvique/openw
 | `tetra-dmo` | TETRA DMO / DM-GATE — bezpośrednia łączność radio↔radio | `install.sh` |
 | `lora` | LoRa-APRS (CSS) — dekoder ramek APRS, digimode drugorzędny | `install.sh` |
 | `dmr-ep` | DMR z deszyfrowaniem RC4 (Enhanced/Basic Privacy) + pozycje LRRP na mapie | `patch_dmr_ep.py` (ręcznie / manual) |
+| `lte` | Identyfikacja komórki LTE: PCI, MIB, SIB1–7 (operator, eNB, TAC, sąsiedzi) | `patch_lte.py` (ręcznie / manual) |
+| `gsm` | Identyfikacja komórki GSM: BSIC, CI/LAC, SI1–13, sąsiedzi + wykrywanie anomalii (IMSI-catcher) | `patch_gsm.py` (ręcznie / manual) |
 
 ---
 
@@ -58,6 +60,20 @@ Wtyczka rozszerza OpenWebRX+ o dekodowanie cyfrowych trybów łączności: demod
 - ⚠️ Klucze RC4 **nie są** trzymane w repo — `dmr_ep.key` jest w `.gitignore`
 - Szczegóły: [`tetra/DMR_EP.md`](tetra/DMR_EP.md)
 
+### Funkcje — LTE (`lte`)
+- Kliknięcie nośnej LTE na wodospadzie → panel „📶 LTE — komórka”
+- PSS/SSS → **PCI** i CFO (dociąganie do rastra 100 kHz), `pdsch_ue` (srsRAN 4G, łatka `PDSCH_ALL_SI`) → **MIB**
+- Dla komórek 1,4 MHz także **SIB1–7** (pycrate): PLMN + operator, Cell ID → eNB/sektor, TAC, pasmo/EARFCN, moc RS, sąsiedzi LTE/UMTS/GSM z priorytetami
+- Ograniczenie: IF 1,92 MS/s (6 PRB) — dla szerszych komórek tylko PCI + MIB
+- Szczegóły: [`tetra/LTE.md`](tetra/LTE.md)
+
+### Funkcje — GSM (`gsm`)
+- Kliknięcie nośnej BCCH (C0) → panel „📡 GSM — komórka” (gr-gsm + pycrate, analiza ~8 s)
+- **BSIC** (dekodowanie SCH), PLMN + operator, **CI**, **LAC**, parametry dostępu i reselekcji (CRO), konfiguracja CCCH, T3212, GPRS/EDGE (RAC, NMO)
+- Alokacja komórki (SI1), sąsiedzi GSM 900/1800, UMTS i LTE (SI2/2bis/2ter/2quater), obciążenie (paging/s), poziom i CFO z tonu FCCH
+- **Wykrywanie anomalii (IMSI-catcher)** — baza znanych komórek (`/var/lib/openwebrx/gsm_cells.json`) i heurystyki: testowy/nieznany PLMN, pusta lista sąsiadów, wysoki CRO, nieznany LAC, ARFCN spoza list sąsiadów, zmiana CI/BSIC na tym samym ARFCN, brak GPRS / sąsiadów 3G/4G
+- Szczegóły: [`tetra/GSM.md`](tetra/GSM.md)
+
 ### Łańcuch sygnałów
 ```
 TETRA TMO:
@@ -71,6 +87,14 @@ DMR EP:
 IQ → dyskryminator FM → dsd-fme (RC4 EP/BP)
    → dmr_ep_decoder.py (meta + LRRP)
    → PCM audio + JSON → panel DMR EP + mapa OWRX
+
+LTE:
+IQ (1,92 MS/s) → lte_decoder.py: migawka 3 s, PSS/SSS → PCI/CFO
+               → pdsch_ue (srsRAN) → MIB + SI-RNTI (UDP) → pycrate SIB → JSON → LteMetaPanel
+
+GSM:
+IQ (500 kS/s) → gsm_decoder.py: migawka 6 s → gr-gsm (bursty C0 + BCCH/CCCH)
+              → SCH (BSIC), pycrate SI1–13, ocena anomalii → JSON → GsmMetaPanel
 ```
 
 ### Instalacja
@@ -104,11 +128,15 @@ systemctl restart openwebrx
 ```
 Wymaga `dsd-fme` w PATH (lub `/usr/local/bin/dsd-fme`) oraz `numpy`/`scipy`.
 
+**LTE i GSM instalują się osobno**, tym samym wzorcem (decoder → `/opt/openwebrx-tetra/`, chain/module → `{dist-packages}/csdr/`, `patch_lte.py` / `patch_gsm.py`). Pełne instrukcje: [`tetra/LTE.md`](tetra/LTE.md), [`tetra/GSM.md`](tetra/GSM.md).
+
 ### Wymagania
 - OpenWebRX+ v1.2.x
 - Debian/Raspberry Pi OS (aarch64 lub x86_64)
 - GNURadio + osmo-tetra (instalowane przez `install.sh`)
 - `dsd-fme`, `numpy`, `scipy` — tylko dla trybu DMR EP
+- `numpy`, `scipy`, `pycrate`, srsRAN 4G (`build_lte_pdsch.sh`) — tryb LTE
+- `gr-gsm` (apt), `pycrate` — tryb GSM
 - Dostęp do internetu przy pierwszej instalacji
 
 ### Pliki
@@ -147,6 +175,21 @@ tetra/
   patch_dmr_ep_panel.py / patch_dmr_ep_ui.py
   DMR_EP.md                 — dokumentacja trybu + wyniki walidacji
 
+  # LTE
+  lte_decoder.py            — PSS/SSS → PCI, pdsch_ue → MIB/SIB, pycrate
+  csdr_module_lte.py / csdr_chain_lte.py
+  lte_panel.js              — panel „LTE — komórka”
+  patch_lte.py              — rejestracja trybu 'lte' (modes/feature/dsp/htdocs)
+  build_lte_pdsch.sh        — budowa pdsch_ue (srsRAN 4G) z łatką PDSCH_ALL_SI
+  LTE.md                    — dokumentacja trybu
+
+  # GSM
+  gsm_decoder.py            — gr-gsm + SCH/BSIC + pycrate SI + baza komórek / anomalie
+  csdr_module_gsm.py / csdr_chain_gsm.py
+  gsm_panel.js              — panel „GSM — komórka”
+  patch_gsm.py              — rejestracja trybu 'gsm' (modes/feature/dsp/htdocs)
+  GSM.md                    — dokumentacja trybu
+
   # Narzędzia
   deploy.py                 — szybki redeploy dekodera + panelu na RPi
   update_html_css.py        — aktualizacja HTML/CSS na serwerze
@@ -156,6 +199,7 @@ tetra/
 ### Ścieżki po instalacji
 - `/opt/openwebrx-tetra/` — binaria, skrypty dekodera, opcjonalny `offset.txt`
 - `/var/lib/openwebrx/dmr_ep.key` — klucz RC4 dla trybu DMR EP (0600, poza repo)
+- `/var/lib/openwebrx/gsm_cells.json` — baza znanych komórek GSM (wykrywanie anomalii)
 - `/usr/lib/python3/dist-packages/` — patche integracyjne OpenWebRX+ (modes.py, feature.py, dsp.py, csdr/*, htdocs/*)
 
 ---
@@ -205,6 +249,20 @@ The plugin adds digital-mode decoding to OpenWebRX+: π/4-DQPSK demod, L1/L2/L3 
 - ⚠️ RC4 keys are **not** stored in the repo — `dmr_ep.key` is gitignored
 - Details: [`tetra/DMR_EP.md`](tetra/DMR_EP.md)
 
+### Features — LTE (`lte`)
+- Click an LTE carrier on the waterfall → "📶 LTE — komórka" panel
+- PSS/SSS → **PCI** and CFO (snaps to the 100 kHz raster), `pdsch_ue` (srsRAN 4G, `PDSCH_ALL_SI` patch) → **MIB**
+- For 1.4 MHz cells also **SIB1–7** (pycrate): PLMN + operator, Cell ID → eNB/sector, TAC, band/EARFCN, RS power, LTE/UMTS/GSM neighbours with priorities
+- Limitation: 1.92 MS/s IF (6 PRB) — wider cells give PCI + MIB only
+- Details: [`tetra/LTE.md`](tetra/LTE.md)
+
+### Features — GSM (`gsm`)
+- Click a BCCH (C0) carrier → "📡 GSM — komórka" panel (gr-gsm + pycrate, ~8 s analysis)
+- **BSIC** (SCH decoding), PLMN + operator, **CI**, **LAC**, access and reselection parameters (CRO), CCCH configuration, T3212, GPRS/EDGE (RAC, NMO)
+- Cell allocation (SI1), GSM 900/1800, UMTS and LTE neighbours (SI2/2bis/2ter/2quater), load (paging/s), level and CFO from the FCCH tone
+- **Anomaly detection (IMSI catcher)** — known-cell database (`/var/lib/openwebrx/gsm_cells.json`) and heuristics: test/unknown PLMN, empty neighbour list, high CRO, unknown LAC, ARFCN missing from neighbour lists, CI/BSIC change on the same ARFCN, no GPRS / no 3G/4G neighbours
+- Details: [`tetra/GSM.md`](tetra/GSM.md)
+
 ### Signal chain
 ```
 TETRA TMO:
@@ -218,6 +276,14 @@ DMR EP:
 IQ → FM discriminator → dsd-fme (RC4 EP/BP)
    → dmr_ep_decoder.py (meta + LRRP)
    → PCM audio + JSON → DMR EP panel + OWRX map
+
+LTE:
+IQ (1.92 MS/s) → lte_decoder.py: 3 s snapshot, PSS/SSS → PCI/CFO
+               → pdsch_ue (srsRAN) → MIB + SI-RNTI (UDP) → pycrate SIB → JSON → LteMetaPanel
+
+GSM:
+IQ (500 kS/s) → gsm_decoder.py: 6 s snapshot → gr-gsm (C0 bursts + BCCH/CCCH)
+              → SCH (BSIC), pycrate SI1–13, anomaly assessment → JSON → GsmMetaPanel
 ```
 
 ### Installation
@@ -251,16 +317,21 @@ systemctl restart openwebrx
 ```
 Requires `dsd-fme` in PATH (or `/usr/local/bin/dsd-fme`) plus `numpy`/`scipy`.
 
+**LTE and GSM are installed separately**, following the same pattern (decoder → `/opt/openwebrx-tetra/`, chain/module → `{dist-packages}/csdr/`, `patch_lte.py` / `patch_gsm.py`). Full instructions: [`tetra/LTE.md`](tetra/LTE.md), [`tetra/GSM.md`](tetra/GSM.md).
+
 ### Requirements
 - OpenWebRX+ v1.2.x
 - Debian / Raspberry Pi OS (aarch64 or x86_64)
 - GNURadio + osmo-tetra (installed by `install.sh`)
 - `dsd-fme`, `numpy`, `scipy` — DMR EP mode only
+- `numpy`, `scipy`, `pycrate`, srsRAN 4G (`build_lte_pdsch.sh`) — LTE mode
+- `gr-gsm` (apt), `pycrate` — GSM mode
 - Internet access for the first install
 
 ### Server paths after install
 - `/opt/openwebrx-tetra/` — decoder binaries, scripts, optional `offset.txt`
 - `/var/lib/openwebrx/dmr_ep.key` — RC4 key for DMR EP mode (0600, kept out of the repo)
+- `/var/lib/openwebrx/gsm_cells.json` — known GSM cell database (anomaly detection)
 - `/usr/lib/python3/dist-packages/` — OpenWebRX+ integration patches (modes.py, feature.py, dsp.py, csdr/*, htdocs/*)
 
 ---
