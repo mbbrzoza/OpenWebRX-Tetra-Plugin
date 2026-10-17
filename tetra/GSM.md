@@ -16,9 +16,9 @@ nowej/zmienionej komórce lub co 10 min). Ocena jest liczona względem komórek 
 | poziom | heurystyka |
 |---|---|
 | ⚠ | testowy PLMN (MCC 001/002/999/901) lub nieznany operator w MCC 260 |
-| ⚠ | brak SI2 / pusta lista sąsiadów BA |
-| ⚠ | CRO ≥ 20 dB (komórka „wymusza” reselekcję) |
-| ⚠ (ℹ przy < 3 znanych) | LAC niespotykany w innych komórkach sieci; ARFCN nieobecny na ich listach sąsiadów |
+| ⚠ | pusta lista sąsiadów BA; brak SI2 przy pełnym odczycie SI1/3/4 (inaczej ℹ „niepełny odczyt”) |
+| ⚠ | CRO ≥ 40 dB (komórka „wymusza” reselekcję; sieci używają do ~30 dB, T-Mobile 26 dB) |
+| ⚠ (ℹ przy < 3 znanych) | LAC niespotykany w innych komórkach sieci; ARFCN nieobecny na listach sąsiadów komórek tego samego operatora |
 | ⚠ | ten sam ARFCN + BSIC z innym CI/LAC (podmiana); zmiana BSIC znanej komórki |
 | ℹ | brak GPRS; brak sąsiadów 3G/4G; sieć zagraniczna |
 

@@ -470,13 +470,16 @@ def assess(res, cells):
             add("info", f"sieć zagraniczna {plmn}")
     elif si:
         add("warn", "brak SI3/SI4 (nie nadaje LAI)")
+    # przy słabym sygnale część SI ginie w migawce - brak SI2 to anomalia tylko przy pełnym odczycie
+    full = {"si1", "si3", "si4"} <= set(si)
     if "si2" in si and not res.get("gsm_neighbours"):
         add("warn", "pusta lista sąsiadów (SI2)")
     elif si and "si2" not in si:
-        add("warn", "brak SI2 (lista sąsiadów)")
+        add("warn" if full else "info", "brak SI2 (lista sąsiadów)" if full else "niepełny odczyt SI (słaby sygnał?)")
+    # sieci używają CRO do ~30 dB (T-Mobile 26 dB); catchery zwykle skrajnych wartości
     cro = (res.get("reselect") or {}).get("cro_db")
-    if cro is not None and cro >= 20:
-        add("warn", f"wysoki CRO {cro} dB — komórka wymusza wybór")
+    if cro is not None and cro >= 40:
+        add("warn", f"bardzo wysoki CRO {cro} dB — komórka wymusza wybór")
     if si and "gprs" not in res:
         add("info", "brak GPRS")
     if si and not res.get("umts_neighbours") and not res.get("lte_neighbours"):
@@ -499,11 +502,13 @@ def assess(res, cells):
         if lac not in lacs:
             add("warn" if len(same) >= 3 else "info",
                 f"LAC {lac} nie występuje w innych komórkach sieci (znane: {', '.join(map(str, sorted(lacs)))})")
+        # listy sąsiadów są per operator (NetWorkS! dzieli LAC, ale nie listy BA)
+        own_op = [c for c in same if c.get("plmn") == plmn]
         nbr = set()
-        for c in same:
+        for c in own_op:
             nbr.update(c.get("nbrs") or [])
         if nbr and arfcn is not None and arfcn not in nbr:
-            add("warn" if len(same) >= 3 else "info", f"ARFCN {arfcn} nie jest na listach sąsiadów innych komórek sieci")
+            add("warn" if len(own_op) >= 3 else "info", f"ARFCN {arfcn} nie jest na listach sąsiadów innych komórek operatora")
         for c in same:
             # ten sam ARFCN i BSIC = ta sama stacja w zasięgu; inna tożsamość pod nimi = podmiana
             if c.get("arfcn") == arfcn and c.get("bsic") == bsic and c.get("plmn") == plmn \
